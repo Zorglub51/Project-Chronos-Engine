@@ -1,0 +1,5 @@
+# PCE Mini USB game-folder hot-plug.
+# Goes in /etc/udev/rules.d/99-pce-usb.rules.
+
+SUBSYSTEM=="block", KERNEL=="sd[a-z][1-9]", ACTION=="add",    RUN+="/usr/bin/pce-usb-attach %k"
+SUBSYSTEM=="block", KERNEL=="sd[a-z][1-9]", ACTION=="remove", RUN+="/usr/bin/pce-usb-detach %k"

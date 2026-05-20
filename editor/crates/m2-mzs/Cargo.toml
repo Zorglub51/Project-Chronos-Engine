@@ -1,0 +1,10 @@
+[package]
+name = "m2-mzs"
+version = "0.1.0"
+edition = "2021"
+description = "M2 MZS archive format (zstd + XOR encryption) used by PC Engine Mini and similar consoles"
+
+[dependencies]
+md-5 = "0.10"
+zstd = "0.13"
+thiserror = "2"

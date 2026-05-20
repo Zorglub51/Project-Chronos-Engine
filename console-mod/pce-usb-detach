@@ -1,0 +1,22 @@
+#!/bin/sh
+# udev RUN handler: USB partition removed.
+
+. /usr/bin/pce-usb-lib.sh
+
+pce_log "detach $1"
+
+# Kill engine synchronously BEFORE dropping binds so it can't try I/O
+# against soon-to-be-dead bind targets.
+pce_kill_engine
+
+# Drop wholesale + per-file binds (only /dev/sd* layers).
+pce_drop_binds
+
+# Pop the partition mount itself.
+pop_sd_binds_on "$USB_MNT"
+rmdir "$USB_MNT" 2>/dev/null
+
+# Now schedule the stock engine to relaunch on NAND.
+pce_schedule_start
+pce_log "detach done"
+exit 0

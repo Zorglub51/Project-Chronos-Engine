@@ -1,0 +1,90 @@
+name: Build editor
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'editor/**'
+      - '.github/workflows/build.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'editor/**'
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    name: Windows .exe
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: editor
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: editor/src-tauri -> target
+
+      - name: npm install
+        run: npm install
+
+      - name: Build (release)
+        run: npx tauri build
+
+      - name: Upload editor exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: project-chronos-engine-editor-windows
+          path: |
+            editor/src-tauri/target/release/pce-game-editor.exe
+            editor/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: warn
+
+  build-macos:
+    name: macOS .app
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: editor
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: editor/src-tauri -> target
+
+      - name: npm install
+        run: npm install
+
+      - name: Build (release, universal)
+        run: npx tauri build --target universal-apple-darwin
+
+      - name: Upload editor app
+        uses: actions/upload-artifact@v4
+        with:
+          name: project-chronos-engine-editor-macos
+          path: |
+            editor/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app
+            editor/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: warn

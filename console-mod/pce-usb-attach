@@ -1,0 +1,36 @@
+#!/bin/sh
+# udev RUN handler: USB partition appeared.
+
+. /usr/bin/pce-usb-lib.sh
+
+DEV=/dev/$1
+pce_log "attach $DEV"
+
+for i in 1 2 3 4 5; do
+    [ -b "$DEV" ] && break
+    sleep 0.2 2>/dev/null || sleep 1
+done
+[ -b "$DEV" ] || { pce_log "no $DEV"; exit 0; }
+
+if ! mount | grep -q " $USB_MNT "; then
+    mkdir -p "$USB_MNT"
+    if ! mount -t vfat -o rw,sync,uid=0,gid=0,fmask=0022,dmask=0022 "$DEV" "$USB_MNT" 2>>${LOG}; then
+        pce_log "mount $DEV failed"
+        rmdir "$USB_MNT" 2>/dev/null
+        exit 0
+    fi
+fi
+
+pce_apply_bind || { umount -l "$USB_MNT" 2>/dev/null; exit 0; }
+
+# Only restart engine if it's already running (hot-plug case). At cold
+# boot, mount-usb-drives + udev coldplug both fire pce-usb-attach while
+# m2engage isn't up yet — S99first_startup will launch it once after rcS.
+if pidof m2engage >/dev/null 2>&1; then
+    pce_kill_engine
+    pce_schedule_start
+    pce_log "hot-plug: engine restart scheduled"
+else
+    pce_log "boot path: engine not running, S99first_startup will launch it"
+fi
+exit 0

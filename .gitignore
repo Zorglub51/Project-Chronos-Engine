@@ -1,0 +1,12 @@
+# Build artefacts
+editor/node_modules/
+editor/src-tauri/target/
+editor/src-tauri/gen/
+editor/target/
+target/
+
+# macOS noise
+.DS_Store
+
+# Logs
+*.log

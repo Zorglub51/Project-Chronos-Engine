@@ -1,0 +1,32 @@
+{
+  "productName": "PCE Game Editor",
+  "version": "0.1.0",
+  "identifier": "com.pce.game-editor",
+  "build": {
+    "frontendDist": "../src",
+    "beforeDevCommand": "",
+    "beforeBuildCommand": ""
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "PCE Game Editor",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: https://asset.localhost data:; script-src 'self'"
+    }
+  },
+  "plugins": {},
+  "bundle": {
+    "active": true,
+    "targets": ["app"],
+    "category": "DeveloperTool"
+  }
+}

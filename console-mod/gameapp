@@ -1,0 +1,100 @@
+#!/bin/sh
+#
+# /etc/init.d/gameapp — USB-aware launcher.
+# Conditional LD_PRELOAD when the bind-mounted USB /game/ tree exposes
+# /usr/game/lib/m2hook_print.so. Stock /usr/game/lib is empty → no
+# preload → engine runs vanilla. shutdown-detection only fires for true
+# user-initiated shutdowns (runtime ≥ 60s and no EXIT_FILE marker).
+#
+PROC=m2engage
+GAME_HOME=/usr/game
+EXIT_FILE=/tmp/.game.exit
+LOG_FILE=/tmp/.game.log
+
+StartGame() {
+	rm -rf ${EXIT_FILE}
+	PERSLOG=/rootfs_data/gameapp_session.log
+	echo "[$(date +%H:%M:%S)] === StartGame begin ===" | tee -a ${PERSLOG} >> ${LOG_FILE}
+
+	# Conditional hook + probe LD_PRELOAD. Active only when USB /game/
+	# is bind-mounted over /usr/game (its lib/ has the .so files).
+	preload=
+	[ -f ${GAME_HOME}/lib/m2hook_print.so ] && preload=${GAME_HOME}/lib/m2hook_print.so
+	[ -f ${GAME_HOME}/lib/probe_gl.so ]    && preload=${preload:+${preload}:}${GAME_HOME}/lib/probe_gl.so
+	if [ -n "$preload" ]; then
+		echo "[$(date +%H:%M:%S)] LD_PRELOAD=$preload" >> ${LOG_FILE}
+		export LD_PRELOAD=$preload
+		export M2HOOK_DEBUG=1
+	fi
+
+	ulimit -s 1024
+	export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${GAME_HOME}
+	start_ts=$(date +%s)
+	echo "[$(date +%H:%M:%S)] m2engage launching (preload=$preload)" >> ${PERSLOG}
+	cd ${GAME_HOME} && ./${PROC} >> ${LOG_FILE} 2>&1
+	rc=$?
+	end_ts=$(date +%s)
+	runtime=$((end_ts - start_ts))
+	echo "[$(date +%H:%M:%S)] m2engage exited rc=$rc runtime=${runtime}s" | tee -a ${PERSLOG} >> ${LOG_FILE}
+	sync
+
+	# Decide whether to call shutdown-detection.
+	#   - EXIT_FILE set     → our pce-usb scripts intentionally killed
+	#                         the engine for a hot-plug transition.
+	#   - USB mode AND
+	#     /mnt/usb gone     → the stick was yanked, m2engage I/O-errored
+	#                         out faster than pce-usb-detach could mark
+	#                         EXIT_FILE. Race-safe alternative signal.
+	# Skip in either case; let pce-usb-{attach,detach} restart the
+	# engine. Otherwise call shutdown-detection (stock behaviour).
+	was_usb_mode=
+	[ -n "$preload" ] && was_usb_mode=1
+	usb_gone=
+	[ "$was_usb_mode" = "1" ] && ! mount | grep -q " /mnt/usb " && usb_gone=1
+
+	if [ ! -f ${EXIT_FILE} ] && [ -z "$usb_gone" ]; then
+		echo "[$(date +%H:%M:%S)] calling shutdown-detection $rc" | tee -a ${PERSLOG} >> ${LOG_FILE}
+		sync
+		/usr/bin/shutdown-detection $rc
+		sd_rc=$?
+		echo "[$(date +%H:%M:%S)] shutdown-detection returned $sd_rc" | tee -a ${PERSLOG} >> ${LOG_FILE}
+		# shutdown-detection's happy path is `execl /sbin/poweroff` — if
+		# it succeeded, the process is replaced and we never get here.
+		# If we did get here, execl failed (observed: execl returns rc=0
+		# even when /sbin/poweroff exists as a busybox symlink — unclear
+		# why) and shutdown-detection returned. Power off ourselves so
+		# the console doesn't stay alive with no engine.
+		echo "[$(date +%H:%M:%S)] /sbin/poweroff fallback" | tee -a ${PERSLOG} >> ${LOG_FILE}
+		sync
+		/sbin/poweroff
+	else
+		reason="EXIT_FILE present"
+		[ "$usb_gone" = "1" ] && reason="USB unplugged mid-session"
+		echo "[$(date +%H:%M:%S)] skip shutdown-detection ($reason)" | tee -a ${PERSLOG} >> ${LOG_FILE}
+	fi
+}
+
+CheckEnv() { :; }
+
+start() { CheckEnv; StartGame & }
+
+stop() {
+	echo "stop game app" >> ${LOG_FILE}
+	touch ${EXIT_FILE}
+	killall -9 ${PROC} 2>/dev/null
+	killall -9 shutdown-detection 2>/dev/null
+}
+
+restart() {
+	stop
+	sleep 1
+	start
+}
+
+case "$1" in
+	start)   start ;;
+	stop)    stop ;;
+	restart|reload) restart ;;
+	*) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac
+exit $?

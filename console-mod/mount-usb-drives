@@ -1,0 +1,73 @@
+#!/bin/sh
+#
+# /bin/mount-usb-drives — boot-time splash + USB detection + game bind.
+#
+# Called from /etc/inittab as ::sysinit:. Decodes the splash wallpaper to
+# /dev/fb0, then polls `/dev/sd*[1-9]` for 10 seconds. If a USB partition
+# appears with a /game/ tree on it, mount + bind /game over /usr/game
+# before rcS starts the engine. Stock boot if no stick within 10 s.
+
+USB_MNT=/mnt/usb
+USB_GAME=${USB_MNT}/game
+LIVE_GAME=/usr/game
+LOG=/tmp/mount-usb-drives.log
+SPLASH=/usr/local/wait.gz
+
+log() { echo "[$(date +%H:%M:%S)] $*" >>${LOG}; }
+
+# Splash now (user-visible during the probe window).
+[ -f "$SPLASH" ] && gzip -dc "$SPLASH" > /dev/fb0 2>/dev/null
+
+# 10 s poll: 100 × 100 ms. Exits the moment a partition node appears.
+device=
+i=0
+while [ $i -lt 100 ]; do
+    for d in /dev/sd*[1-9]; do
+        [ -b "$d" ] || continue
+        device="$d"
+        break 2
+    done
+    sleep 0.1 2>/dev/null || sleep 1
+    i=$((i + 1))
+done
+
+if [ -z "$device" ]; then
+    log "no USB after 10s, stock boot"
+    exit 0
+fi
+log "found $device after ${i}00ms"
+
+mkdir -p "$USB_MNT"
+if ! mount -t vfat -o rw,sync,uid=0,gid=0,fmask=0022,dmask=0022 "$device" "$USB_MNT" 2>>${LOG}; then
+    log "mount $device failed"
+    rmdir "$USB_MNT" 2>/dev/null
+    exit 0
+fi
+
+if [ ! -x "$USB_GAME/m2engage" ]; then
+    log "no $USB_GAME/m2engage — not a library stick"
+    umount "$USB_MNT" 2>/dev/null
+    rmdir "$USB_MNT" 2>/dev/null
+    exit 0
+fi
+
+# Seed save files from NAND if zero-stubbed (publisher defaults).
+for f in data_008_0000.bin meta_008_0000.bin; do
+    usb_file="$USB_GAME/save/$f"
+    nand_file="/rootfs_data/$f"
+    [ -f "$usb_file" ] || continue
+    [ -f "$nand_file" ] || continue
+    sample=$(head -c 4096 "$usb_file" 2>/dev/null | od -An -tx1 -v | tr -d ' \n0')
+    if [ -z "$sample" ]; then
+        cp "$nand_file" "$usb_file" 2>>${LOG} && sync && log "seeded $f from NAND"
+    fi
+done
+
+if mount --bind "$USB_GAME" "$LIVE_GAME" 2>>${LOG}; then
+    log "bound $USB_GAME -> $LIVE_GAME"
+else
+    log "BIND FAILED"
+    exit 0
+fi
+
+exit 0

@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PCE Game Editor</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app">
+        <!-- Sidebar -->
+        <div class="sidebar" id="sidebar" style="display:none">
+            <div class="sidebar-header">
+                <div class="sidebar-header-row">
+                    <h1>PCE Game Editor</h1>
+                    <button class="btn-gear" id="btn-settings" title="Settings">&#9881;</button>
+                </div>
+                <p id="library-stats">No library loaded</p>
+            </div>
+            <div class="lineup-tabs" id="lineup-tabs" style="display:none">
+                <button class="lineup-tab active" data-lineup="jp">JP</button>
+                <button class="lineup-tab" data-lineup="us">US</button>
+            </div>
+            <div class="sidebar-actions">
+                <button id="btn-add" title="Add new game">+ Add Game</button>
+                <button id="btn-add-folder" title="Add sub-folder">+ Folder</button>
+                <button id="btn-sorting" title="Edit sort orders">Sorting</button>
+                <button id="btn-publish" title="Publish library to a deployable m2engage tree">Publish…</button>
+            </div>
+            <div class="folder-breadcrumb" id="folder-breadcrumb" style="display:none">
+                <button class="breadcrumb-back" id="breadcrumb-back">&larr; Back</button>
+                <span class="breadcrumb-name" id="breadcrumb-folder-name"></span>
+                <button class="btn-small breadcrumb-cover-btn" id="btn-folder-cover" title="Set folder cover image">Set Cover</button>
+            </div>
+            <div class="game-list" id="game-list"></div>
+        </div>
+
+        <!-- Main content -->
+        <div class="main" id="main-content">
+            <!-- Open folder prompt (shown initially) -->
+            <div class="open-prompt" id="open-prompt">
+                <p>Open a games folder to get started</p>
+                <button class="btn-primary" id="btn-open-folder">Open Games Folder</button>
+            </div>
+
+            <!-- Placeholder (shown when no game selected) -->
+            <div class="placeholder" id="placeholder" style="display:none">
+                Select a game from the list to edit
+            </div>
+
+            <!-- Settings panel -->
+            <div class="settings-panel" id="settings-panel" style="display:none">
+                <div class="settings-header">
+                    <h2>Settings</h2>
+                    <button class="btn-small" id="btn-settings-close">Close</button>
+                </div>
+                <div class="section open">
+                    <div class="section-title">Editor</div>
+                    <div class="section-body">
+                        <div class="setting-row">
+                            <label class="setting-label">Games folder</label>
+                            <div class="setting-path-row">
+                                <span class="setting-path" id="s-games-path">Not set</span>
+                                <button class="btn-small" id="btn-change-folder">Change</button>
+                            </div>
+                        </div>
+                        <div class="setting-row">
+                            <label class="setting-label" for="s-confirm-delete">Confirm before deleting a game</label>
+                            <input type="checkbox" id="s-confirm-delete" class="setting-toggle" checked>
+                        </div>
+                        <div class="setting-row">
+                            <label class="setting-label" for="s-force-us-titlebar">Force US lineup titlebars (TG16 for HuCard, TG16-CD for CD-ROM)</label>
+                            <input type="checkbox" id="s-force-us-titlebar" class="setting-toggle" checked>
+                        </div>
+                    </div>
+                </div>
+                <div class="section open">
+                    <div class="section-title">Genres</div>
+                    <div class="section-body">
+                        <div class="setting-list" id="s-genre-list"></div>
+                        <div class="setting-add-row">
+                            <input type="text" id="s-genre-input" placeholder="New genre name">
+                            <button class="btn-small" id="btn-add-genre">Add</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="section open">
+                    <div class="section-title">Alphabetical Sort Exclusions</div>
+                    <div class="section-body">
+                        <p class="setting-hint">Words to ignore when sorting alphabetically (e.g. "The", "A")</p>
+                        <div class="setting-list" id="s-alpha-list"></div>
+                        <div class="setting-add-row">
+                            <input type="text" id="s-alpha-input" placeholder="Prefix to exclude">
+                            <button class="btn-small" id="btn-add-alpha">Add</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Sorting panel -->
+            <div class="sorting-panel" id="sorting-panel" style="display:none">
+                <div class="settings-header">
+                    <h2>Sort Editor</h2>
+                    <button class="btn-small" id="btn-sorting-close">Close</button>
+                </div>
+                <div class="sort-tabs">
+                    <button class="sort-tab active" data-sort="date">Date</button>
+                    <button class="sort-tab" data-sort="genre">Genre</button>
+                    <button class="sort-tab" data-sort="demo">Demo</button>
+                </div>
+                <div class="sort-list" id="sort-list"></div>
+            </div>
+
+            <!-- Folder editor (shown when a folder is selected) -->
+            <div class="editor" id="folder-editor" style="display:none">
+                <div class="editor-header">
+                    <div class="cover-box" id="folder-cover-box">
+                        <img class="editor-cover" id="folder-editor-cover" src="" alt="Cover">
+                        <div class="box-frame" style="background-image:url(box_white.png)"></div>
+                    </div>
+                    <div>
+                        <div class="editor-title" id="folder-editor-title"></div>
+                        <div class="editor-subtitle" id="folder-editor-subtitle"></div>
+                    </div>
+                </div>
+                <div class="section open">
+                    <div class="section-title">Display Name</div>
+                    <div class="section-body">
+                        <div class="field-row">
+                            <label class="field-label">Name</label>
+                            <div class="field-value">
+                                <input type="text" id="f-folder-name" placeholder="Folder display name">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="section open">
+                    <div class="section-title">Folder Cover</div>
+                    <div class="section-body">
+                        <div style="text-align:center">
+                            <img id="folder-cover-preview" class="editor-cover" style="width:240px;height:240px" src="" alt="Cover">
+                            <div class="cover-drop-zone" id="folder-cover-drop">
+                                Click to replace folder cover (also used as Back cover)
+                            </div>
+                            <div style="margin-top:8px">
+                                <button class="btn-small" id="btn-folder-mosaic-cover">Build 2×2 mosaic from folder games…</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div style="text-align:center; margin-top:16px">
+                    <button class="btn-primary" id="btn-enter-folder" style="font-size:14px; padding:10px 24px">Enter Folder</button>
+                </div>
+                <div style="text-align:right; margin-top:16px; padding-bottom:60px">
+                    <button class="btn-danger" id="btn-delete-folder">Delete this folder</button>
+                </div>
+            </div>
+
+            <!-- Editor -->
+            <div class="editor" id="editor">
+                <!-- Header with cover + title -->
+                <div class="editor-header">
+                    <div class="cover-box" id="cover-box">
+                        <img class="editor-cover" id="editor-cover" src="" alt="Cover">
+                        <div class="box-frame" id="box-frame"></div>
+                    </div>
+                    <div class="editor-header-info">
+                        <div class="editor-title" id="editor-title"></div>
+                        <div class="editor-subtitle" id="editor-subtitle"></div>
+                        <div class="editor-tags" id="editor-tags"></div>
+                    </div>
+                    <div class="editor-header-actions">
+                        <button class="btn-move-top" id="btn-move">Move to...</button>
+                        <button class="btn-danger btn-delete-top" id="btn-delete">Delete this game</button>
+                    </div>
+                </div>
+
+                <!-- Display section -->
+                <div class="section open" data-section="display">
+                    <div class="section-title">Display</div>
+                    <div class="section-body">
+                        <div class="field-row">
+                            <label class="field-label">Name (English)</label>
+                            <div class="field-value">
+                                <div class="input-with-btn">
+                                    <input type="text" id="f-name-eng" data-path="display.name_eng">
+                                    <button class="btn-small" id="btn-copy-name-to-jp" title="Copy to Japanese name">&rarr; JP</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="field-row">
+                            <label class="field-label">Name (JP)</label>
+                            <div class="field-value">
+                                <input type="text" id="f-name" data-path="display.name">
+                            </div>
+                        </div>
+                        <div class="field-row">
+                            <label class="field-label">Players</label>
+                            <div class="field-value">
+                                <select id="f-players" data-path="display.players">
+                                    <option value="1">1</option>
+                                    <option value="2">2</option>
+                                    <option value="3">3</option>
+                                    <option value="4">4</option>
+                                    <option value="5">5</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="field-row">
+                            <label class="field-label">Titlebar</label>
+                            <div class="field-value">
+                                <div class="titlebar-picker" id="titlebar-picker">
+                                </div>
+                                <input type="hidden" id="f-titlebar" data-path="display.titlebar" value="4">
+                            </div>
+                        </div>
+                        <div class="field-row">
+                            <label class="field-label">Box Color</label>
+                            <div class="field-value">
+                                <div class="ccolor-picker" id="ccolor-picker">
+                                    <div class="ccolor-option" data-ccolor="0" title="Black">
+                                        <div class="ccolor-box">
+                                            <img class="ccolor-thumb" id="ccolor-thumb-0" src="" alt="">
+                                            <div class="ccolor-frame" style="background-image:url(box_white.png)"></div>
+                                        </div>
+                                        <div class="ccolor-label">Black</div>
+                                    </div>
+                                    <div class="ccolor-option" data-ccolor="1" title="White">
+                                        <div class="ccolor-box">
+                                            <img class="ccolor-thumb" id="ccolor-thumb-1" src="" alt="">
+                                            <div class="ccolor-frame" style="background-image:url(box_black.png)"></div>
+                                        </div>
+                                        <div class="ccolor-label">White</div>
+                                    </div>
+                                    <div class="ccolor-option" data-ccolor="2" title="Double CD">
+                                        <div class="ccolor-box">
+                                            <img class="ccolor-thumb" id="ccolor-thumb-2" src="" alt="">
+                                            <div class="ccolor-frame" style="background-image:url(box_wide.png)"></div>
+                                        </div>
+                                        <div class="ccolor-label">Double CD</div>
+                                    </div>
+                                </div>
+                                <input type="hidden" id="f-ccolor" data-path="display.ccolor" value="0">
+                            </div>
+                        </div>
+                        <div class="field-row">
+                            <label class="field-label">Platform</label>
+                            <div class="field-value">
+                                <select id="f-csize" data-path="display.csize">
+                                    <option value="0">TG16 / PC Engine (HuCard)</option>
+                                    <option value="1">SuperGrafx</option>
+                                    <option value="2">CD-ROM2</option>
+                                    <option value="3">Super CD-ROM2</option>
+                                    <option value="4">Arcade CD-ROM2</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="field-row">
+                            <label class="field-label">Demo Time (ms)</label>
+                            <div class="field-value">
+                                <input type="number" id="f-demo-time" data-path="display.demo_time" min="0" step="100">
+                            </div>
+                        </div>
+                        <div class="field-row">
+                            <label class="field-label">Genre</label>
+                            <div class="field-value">
+                                <select id="f-genre" data-path="genre">
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ROM section -->
+                <div class="section open" data-section="rom">
+                    <div class="section-title">ROM</div>
+                    <div class="section-body">
+                        <div class="field-row">
+                            <label class="field-label">ROM File</label>
+                            <div class="field-value">
+                                <div class="input-with-btn">
+                                    <input type="text" id="f-rom" data-path="rom.rom" placeholder="filename.pce" list="rom-datalist">
+                                    <button class="btn-small btn-browse" id="btn-rom-browse" title="Import ROM file">Browse</button>
+                                </div>
+                                <datalist id="rom-datalist"></datalist>
+                            </div>
+                        </div>
+                        <div class="field-row">
+                            <label class="field-label">Preamp (dB)</label>
+                            <div class="field-value">
+                                <div class="slider-combo">
+                                    <input type="range" id="f-preamp-slider" min="-5" max="5" step="0.01">
+                                    <input type="number" id="f-preamp" data-path="rom.preamp" step="0.01" min="-5" max="5">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Cover section -->
+                <div class="section open" data-section="cover">
+                    <div class="section-title">Cover Image</div>
+                    <div class="section-body">
+                        <div style="text-align:center">
+                            <img id="cover-preview" class="editor-cover" style="max-width:280px;height:240px" src="" alt="Cover">
+                            <div class="cover-drop-zone" id="cover-drop">
+                                Click or drop a PNG here to replace cover
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+
+                <!-- Save States section -->
+                <div class="section open" data-section="savestates">
+                    <div class="section-title">Save States</div>
+                    <div class="section-body">
+                        <div class="save-states-grid" id="save-states-grid">
+                        </div>
+                    </div>
+                </div>
+
+                <div style="padding-bottom:60px"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Prompt modal -->
+    <div class="modal-overlay" id="modal-overlay">
+        <div class="modal">
+            <div class="modal-title" id="modal-title">Enter name</div>
+            <input type="text" id="modal-input" autocomplete="off">
+            <div class="modal-select-list" id="modal-select-list"></div>
+            <div class="modal-hint" id="modal-hint"></div>
+            <div class="modal-actions">
+                <button id="modal-cancel">Cancel</button>
+                <button class="btn-primary" id="modal-ok">OK</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Mosaic picker modal: pick 4 games to compose a folder cover -->
+    <div class="modal-overlay" id="mosaic-modal-overlay">
+        <div class="modal" style="max-width:560px">
+            <div class="modal-title">Build folder cover from 4 games</div>
+            <div class="modal-hint" id="mosaic-modal-hint">Pick 4 games (click to toggle). Order = top-left, top-right, bottom-left, bottom-right.</div>
+            <div id="mosaic-game-grid" style="display:grid; grid-template-columns:repeat(4, 1fr); gap:8px; margin:12px 0; max-height:50vh; overflow-y:auto"></div>
+            <div class="modal-actions">
+                <button id="mosaic-modal-cancel">Cancel</button>
+                <button class="btn-primary" id="mosaic-modal-ok" disabled>Build</button>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+[package]
+name = "m2-psb"
+version = "0.1.0"
+edition = "2021"
+description = "M2 PSB binary format reader/writer (PC Engine Mini and similar M2 consoles)"
+
+[dependencies]
+indexmap = { version = "2", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+thiserror = "2"
+
+[dev-dependencies]
+m2-mzs = { path = "../m2-mzs" }

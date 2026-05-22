@@ -1,0 +1,2 @@
+# Geargrafx $1800 read trace — cutscene live capture jeu. 21 mai 2026 21:07:47 CEST
+1: NOT AT BP - stopping capture

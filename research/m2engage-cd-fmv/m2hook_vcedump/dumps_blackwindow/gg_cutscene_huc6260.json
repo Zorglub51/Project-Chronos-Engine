@@ -1,0 +1,1 @@
+{"id":1,"jsonrpc":"2.0","result":{"content":[{"text":"{\n  \"black_white\": false,\n  \"blur\": true,\n  \"control_reg\": \"04\",\n  \"cta\": \"00B0\",\n  \"hsync\": \"HIGH\",\n  \"lines\": 263,\n  \"speed\": \"5.36 MHz\",\n  \"vsync\": \"HIGH\",\n  \"x\": 6,\n  \"y\": 0\n}","type":"text"}]}}

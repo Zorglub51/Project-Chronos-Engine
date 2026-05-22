@@ -343,6 +343,127 @@ $1800.
 
 ---
 
+## Session 10 — Ghidra decompiler fixed + full state machine mapped
+
+Fixed Ghidra's decompiler on Apple Silicon:
+- The `decompile` binary at `~/dev/ghidra_12.1_DEV/Ghidra/Features/Decompiler/os/mac_arm_64/decompile` was Mach-O arm64 + adhoc-signed but blocked by macOS Gatekeeper (`com.apple.provenance` extended attribute).
+- Fix: `xattr -dr com.apple.provenance ~/dev/ghidra_12.1_DEV` + `codesign --force --sign - <binary>`.
+- Also: updated the user's broken `ghidra` alias from a non-existent path to `~/dev/ghidra/ghidraRun`.
+
+With the decompiler working, decompiled all CD-state-machine functions:
+
+| Function | Role | Decompile size |
+|----------|------|----------------|
+| 0x80b58 | CD-ROM state-transition (cmd dispatch + per-phase logic) | 24,568 B |
+| 0x81ab0 | Phase advance handler (called from CD-port reads) | 1,474 B |
+| 0x80a48 | unknown helper | 1,600 B |
+| 0x82af4 | ADPCM init (not CD-ROM) | 819 B |
+| 0x82c08 | (tiny) | 100 B |
+| 0x82c1c | ADPCM state-save register | 2,085 B |
+| 0x82d58 | ADPCM playback (not CD-ROM) | 16,982 B |
+| 0x8248c | I/O write dispatcher (CD ports $1800-$180F) | 8,314 B |
+
+Output saved to `/tmp/m2_decomp_out.c` and `/tmp/m2_cd_funcs.c`.
+
+### Full state-machine in readable C
+
+`FUN_00081ab0(this, port_index)`:
+```c
+phase = this->phase;
+if (phase == 5) {  // MSG_IN
+    if (port_index == 1) {
+        counter = this->msg_byte_counter + 1;
+        this->msg_byte_counter = counter;
+        msg_byte = *(this + msg_byte_counter + 0x78);
+        if (counter < this->msg_expected) {
+            this->status = 0xD8;  // more msg bytes
+        } else {
+            this->status = 0xF8;  // last byte
+            this->phase = 6;       // ★ transition to RESULT
+        }
+        this->data_next = msg_byte;
+    }
+} else if (phase == 6) {
+    this->status &= 0x7F;  // ★ clear BSY → 0xF8 becomes 0x78
+} else if (phase == 4) {  // DATA_IN
+    byte_count = this->byte_count;
+    if ((byte_count & 0x7FF) == 0) {
+        FUN_00080b58();  // refill buffer (sets new phase=4 or phase=5)
+    }
+    this->byte_count = byte_count + 1;
+    this->data_next = this->buffer[byte_count & 0x7FF];
+    if (this->expected_len <= byte_count + 1) {
+        this->phase = 5;  // → MSG_IN
+        FUN_00080b58(this);
+    } else {
+        this->status = 0xC8;  // REQ pulse
+    }
+}
+```
+
+`FUN_0008248c` I/O write dispatcher case 1 ($1801 = CD_CMD write):
+```c
+case 1:
+    phase = this->phase;
+    this->data_next = byte;
+    if ((byte != 0x81) || (phase > 1)) {
+        if (phase == 1) {
+            this->cmd_code = byte;
+            FUN_00080b58(this);  // dispatch by cmd+phase
+            return;
+        }
+        if (phase != 2) {
+            return;  // ★ THE BUG — phase 0, 3, 4, 5, 6: drop the byte
+        }
+        // phase=2 continuation
+        this->cmd_continuation[this->byte_counter++] = byte;
+        ...
+    }
+    // byte == 0x81 AND phase <= 1: reset
+    this->status = 0;
+    this->phase = 0;
+    break;
+```
+
+### Critical missing piece — finally pinpointed
+
+**Phase=1 is NEVER written to obj+0x20 anywhere in the binary** — exhaustive search across all 596,698 instructions found ZERO `movs rN, #1 ; str rN, [r4, #0x20]` patterns matching the CD-ROM object. Yet the runtime trace clearly showed the engine successfully cycling through phase 1 → 2 → 3 → 4 → 6 → ... for 5 chunks.
+
+Possibilities:
+1. **Phase=1 is set via a path our static search missed** — possibly via a computed value (e.g., `phase += 1` from phase=0 → 1), or via Squirrel script binding, or via a different code path we haven't disassembled yet.
+2. **`phase=1` check IS dead code, and the actual command path goes through phase=2 directly somehow** — possibly the BIOS first writes a "select" sequence that sets phase=2 without going through phase=1.
+
+The decompile shows the case 1 ($1801 write) handler ONLY accepts phase=1 (which is unreachable) or phase=2 (which we need somehow to reach). So either there's a phase=2 initializer we haven't found, OR the BIOS protocol uses a sequence that gets handled differently.
+
+### Path forward (real this time)
+
+Given the static analysis has plateaued, the productive next step is **runtime instrumentation focused on the moment phase changes**:
+
+1. **Hook every write to `obj[+0x20]`** at runtime using either:
+   - Memory-watch via PROT_NONE + SIGSEGV handler (complex but doable)
+   - LD_PRELOAD trampoline on every code path we know writes phase (≥10 sites)
+   - Eventually: log timestamp + caller PC for every phase write
+
+2. **OR set up gdb-multiarch on the console** to debug m2engage at runtime with hardware watchpoints. The Mini has gdbserver capability via the SSH+ARM toolchain.
+
+This would catch the elusive phase=1 transition directly and reveal the missing code path.
+
+### Where the Ghidra MCP server would help
+
+If installed and connected to Claude Code, GhidraMCP would let me iteratively:
+- Right-click → "Set struct field type" via API
+- Re-decompile with proper field names (`phase`, `status`, etc.)
+- Cross-reference EVERY operation against the object struct
+- Find the missing phase=1 setter via Ghidra's "find references" on the typed field
+
+For future sessions, **install `LaurieWired/GhidraMCP`**:
+1. Download plugin JAR from https://github.com/LaurieWired/GhidraMCP/releases
+2. In Ghidra: File → Install Extensions → add JAR
+3. Configure Claude Code MCP: `claude mcp add ghidra ...` per LaurieWired's docs
+4. Open project in Ghidra (GUI), MCP server listens on port 8080
+
+That setup lets Claude drive Ghidra interactively, which is the right tool for the remaining structural questions.
+
 ## Session 9 — Targeted patch attempt (REVEALED: patch was too coarse)
 
 Built `m2hook_cdfix` — minimal LD_PRELOAD hook that patches the 4

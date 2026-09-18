@@ -10,6 +10,7 @@ A modding toolkit for the PC Engine Mini / TurboGrafx-16 Mini console that lets 
 | `console-mod/` | The shell scripts + udev rule + `gameapp` replacement that get installed on the console once. Provides USB detection, hot-plug, bind-mount swap, and the conditional `LD_PRELOAD` of the hook. |
 | `console-mod/hook-src/` | C source for `m2hook_print.so` — the LD_PRELOAD shim that intercepts Squirrel scripting calls inside `m2engage` to enable runtime path overrides, SRAM splicing, and the lineup-switch UX. |
 | `mod-assets/` | Pre-built artefacts the editor and the installer pull in at publish/install time: the cross-compiled hook `.so`, patched `.nut.m` scripts, and human-readable `.nut` sources. |
+| [`test-environment/`](./test-environment/README.md) | Run the original ARM32 M2 engine and Chronos folder packs in an isolated Linux desktop VM; includes a Parallels launcher for Apple Silicon Macs. |
 | `installer/` | *(future)* The console-side install tool that backs up stock NAND, deploys `console-mod/` to the right paths, edits `inittab`, and prepares the USB stick's `BACKUP/` directory. |
 
 ## High level flow
@@ -36,6 +37,10 @@ npm run build
 Output: `editor/src-tauri/target/release/bundle/macos/PCE Game Editor.app` on macOS, or `editor/src-tauri/target/release/pce-game-editor.exe` on Windows. CI builds for both via [GitHub Actions](./.github/workflows/build.yml).
 
 ## Wiki
+
+To test native M2 folder navigation on a Mac without modifying a console, see
+the [Linux VM test environment](./test-environment/README.md). It reuses the
+console hook and published `.psb.m` packs, with private test saves.
 
 For end-user documentation (how the mod works in detail, install/uninstall procedures, troubleshooting), see the [Project Chronos Engine wiki](../../wiki).
 

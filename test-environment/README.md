@@ -1,0 +1,220 @@
+# Native M2 test environment
+
+Run the original ARM32 `m2engage` engine and Chronos folder packs on a Linux
+desktop VM, including an ARM64 Ubuntu VM on an Apple Silicon Mac. This exercises
+the **console's engine**, the unchanged Chronos hook, and the four shipped
+Squirrel patches. It does not use the separate C++/macOS rewrite.
+
+The sources in `graphics/` were recovered from the existing Linux VM prototype
+(`m2engage-pce-pi5`). This directory makes that work buildable from this repo,
+adds an isolated launcher, and removes the old duplicate Squirrel print hook.
+No original engine, ROM, BIOS, extracted asset, VM image or user save is included.
+
+## How it works
+
+```text
+ARM32 m2engage under qemu-arm-static
+  + console-mod/hook-src/m2hook_print.c (built unchanged)
+  + ARM32 libMali.so → shared command ring → native gl_proxy → Mesa/virgl → X11
+```
+
+The hook sees its console paths inside a private mount namespace:
+
+| Console path | Private test data |
+|---|---|
+| `/usr/game` | `runtime/game` |
+| `/rootfs_data` | `runtime/game/save` |
+| `/mnt/usb/library/published` | `runtime/published` |
+
+Scripts, configurations, graphics and packs are copied. ROMs are symlinked to
+their sources, which are read-only inside the namespace. All initial test saves
+are empty; existing saves in the published library are **not imported**. The
+rest of the VM filesystem is read-only to the engine. `/tmp`, input FIFOs and
+`/dev/shm` are private. The VM's GPU and desktop sockets are shared for display.
+This is filesystem/process isolation for testing, not a security boundary for
+untrusted binaries.
+
+## Prerequisites inside Linux
+
+Tested with Ubuntu 24.04 ARM64, QEMU 8.2.2, Mesa 25.2.8 and a Parallels desktop
+session. Log into the graphical desktop first. The GPU must support GBM/EGL ES2;
+the display must offer X11 or Xwayland. The proxy currently uses
+`/dev/dri/renderD128` and a fixed 1280×720 window.
+
+On Ubuntu ARM64, these packages supply the build and runtime dependencies:
+
+```sh
+sudo dpkg --add-architecture armhf
+sudo apt update
+sudo apt install build-essential gcc-arm-linux-gnueabihf python3 \
+  qemu-user-static bubblewrap libegl1-mesa-dev libgles2-mesa-dev libgbm-dev libx11-dev \
+  libc6:armhf libstdc++6:armhf libgcc-s1:armhf libopenal1:armhf \
+  libopus0:armhf libbsd0:armhf zlib1g:armhf
+```
+
+Use a VM for this workflow. `start` needs root for the hook's bind mounts, which
+are confined to its namespace; it does not install console init/udev scripts or
+alter the VM's `/usr/game`. Python 3.9+ is required. No Docker or system-wide
+ARM32 executable registration is necessary.
+
+You also need your own:
+
+- extracted stock `alldata.bin` tree (`system/`, `040/`, etc.);
+- JP `1006JP` ARM32 `m2engage` and its `version` / `shutdown.png` support files;
+- published Chronos library with `folders/jp/_root` and each folder's three
+  `.psb.m` files, plus its optional `roms/` directory.
+
+The hook has fixed addresses. Preparation accepts only these SHA-256 identities:
+
+| Binary | SHA-256 | VM validation |
+|---|---|---|
+| Stock JP 1006JP | `b02848f66b82f8ac3090db523c4db9633508f9e3f53c7dc0ee3d01ce8aee8792` | Accepted identity; stock path not yet smoke-tested |
+| Existing VM platform-patched JP binary | `200044b9b0491302a0cac7830e6dd6ec2289b8315a5866eee952222f1de37cfb` | Used for the interactive tests below |
+
+An arbitrary firmware version must not be added to this list without checking
+the hook addresses and the hardware adaptation. The launcher does not patch or
+download an engine.
+
+## From this Mac, using the existing Parallels VM
+
+Run these commands from the repository root. Defaults are the VM
+`Ubuntu 24.04 ARM64`, its `/home/parallels/chronos-native` working directory, and
+the repository under the shared Mac home at `/media/psf/Home`.
+
+```sh
+python3 test-environment/parallels.py resume
+python3 test-environment/parallels.py build
+
+# Once only: use a NEW destination. These are this workspace's existing inputs.
+python3 test-environment/parallels.py prepare \
+  --data /media/psf/Home/dev/pce/alldata_original \
+  --binary /home/parallels/pce/m2engage-patched \
+  --support /media/psf/Home/dev/pce/rootfs/usr/game \
+  --published /media/psf/Home/dev/pce/publish_out/m2engage
+
+python3 test-environment/parallels.py start --silent
+python3 test-environment/parallels.py status
+python3 test-environment/parallels.py screenshot
+python3 test-environment/parallels.py stop
+```
+
+Open the VM's desktop to use the window named **m2engage (GL proxy)**. Screenshots
+contain only that window's rendered frame and are copied to the ignored local
+`test-environment/.work/screenshot.png` file. `stop` stops only this session and
+keeps its test saves; it leaves the VM running.
+
+Global options go before the command, for example:
+
+```sh
+python3 test-environment/parallels.py --vm 'My Linux VM' \
+  --guest-root /home/me/chronos-test \
+  --guest-repo /media/psf/Home/dev/Project-Chronos-Engine build
+```
+
+To refresh published content, prepare a new `--guest-root` rather than
+overwriting an existing runtime. Build into that new root too. The old
+`/home/parallels/pce/m2engage-pce-pi5` prototype and its saves are not modified.
+
+## Directly inside Linux
+
+The same harness works without Parallels Tools:
+
+```sh
+make -C test-environment BUILD=/home/me/chronos-test/build
+python3 test-environment/native.py prepare \
+  --runtime /home/me/chronos-test/runtime \
+  --data /path/to/extracted-stock \
+  --binary /path/to/m2engage \
+  --support /path/to/original/usr/game \
+  --published /path/to/published-library
+sudo python3 test-environment/native.py start \
+  --runtime /home/me/chronos-test/runtime \
+  --build /home/me/chronos-test/build --silent
+sudo python3 test-environment/native.py stop --runtime /home/me/chronos-test/runtime
+```
+
+With GNOME/Xwayland, the single logged-in desktop's Xauthority file is discovered
+automatically. Other desktops or multiple logged-in users need explicit
+`DISPLAY` and `XAUTHORITY` environment variables passed to `start`.
+
+## Controls and diagnostics
+
+| Key in the VM window | Console control |
+|---|---|
+| Arrow keys | Direction pad |
+| Z | I / confirm |
+| X | II / back |
+| Enter | RUN |
+| Right Shift | SELECT |
+| Right Shift + Enter | In-game menu |
+
+The inherited keyboard adapter currently mirrors the keyboard to both virtual
+pads. The command-line injector below sends only to pad 1.
+
+```sh
+python3 test-environment/parallels.py key --key left
+python3 test-environment/parallels.py key --key z
+python3 test-environment/parallels.py key --key select --key run --hold 1
+python3 test-environment/parallels.py log
+```
+
+`start --debug --silent` enables graphics/hook traces; `--duration 60` stops
+automatically after 60 seconds. Each start replaces `runtime/session.log`.
+`status` reports process liveness and `.current`, not a guarantee of menu
+readiness; use a screenshot and the log to inspect actual progress.
+
+If Parallels reports `PrlJob_GetResult: Invalid argument`, inspect `status` and a
+new screenshot before repeating input: the guest command may already have run.
+This error was observed intermittently in Parallels Tools during testing.
+
+## Validation and current limits
+
+Interactive checks on the existing Apple Silicon / Parallels VM:
+
+- GPU rendering via `virgl (Apple M4 (Compat))`, language selection and French menu;
+- entering the Namcot folder and returning via its back entry, with `.current`
+  changing to `jp/FOLDER_NAMCOT` and back to `jp/_root`;
+- native HuCard emulation (The Genji and the Heike Clans and The Kung Fu);
+- SELECT + RUN opens the original in-game menu, and its return action restores
+  the game catalogue;
+- restart with existing private test data, without debug mode.
+
+The previous adapter retained fake-device descriptor numbers after `close`,
+allowing later file reads to be mistaken for I2C reads. It now clears them.
+Early runs also exhibited a black startup; subsequent successful starts do not
+constitute a long-session reliability test.
+
+**Known native-menu issue:** restarting with `.current` pointing inside a folder
+can attempt to initialize its `BACK` pseudo-title as a game (`arch=folder`) and
+crash. By default the harness starts from `jp/_root`. `start --resume-pack` keeps
+the previous pack for reproducing this issue; it does not fix the console code.
+
+Audio output, CD-ROM games, USB insertion/removal, real controllers, save-state
+round trips and long sessions are not validated by these checks. `--silent`
+uses OpenAL's null driver; omitting it uses the guest's audio configuration,
+which may require additional desktop-session setup when running as root.
+
+This tests folder/content behavior, not A33 speed or memory use. QEMU, the VM,
+readback display buffers and the 32 MiB command ring + 4 MiB response area all add
+overhead that the A33 does not have. Chronos's existing folder limits still
+apply (one folder level and up to 49 games plus the back entry per folder).
+
+Run the asset-free preparation safety tests on macOS or Linux:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s test-environment -v
+```
+
+They check input preservation, private saves, rejection of existing destinations
+and symlinks, incomplete packs, missing scripts, unsupported binaries and PID
+reuse. These are complementary to the interactive VM checks.
+
+The ARM32 descriptor-reuse regression can also be run inside the VM, without
+starting the engine or graphics proxy:
+
+```sh
+python3 test-environment/parallels.py build check
+```
+
+This runs the Python tests on Linux, then opens/closes the emulated I2C device
+and verifies that a normal file reusing the same descriptor retains its contents.

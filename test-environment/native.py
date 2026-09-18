@@ -137,6 +137,39 @@ def display_environment():
     return env
 
 
+def audio_environment(env, silent, user_runtime=Path("/run/user")):
+    """Connect ARM32 OpenAL to the desktop's Pulse-compatible audio socket.
+
+    start runs as root for mounts, so OpenAL cannot discover the user's server
+    itself. PipeWire's Pulse socket works with the installed ARM32 libpulse and
+    avoids depending on ARM32 PipeWire/ALSA plugins inside the VM.
+    """
+    env = env.copy()
+    if silent:
+        env["ALSOFT_DRIVERS"] = "null"
+        return env
+    if not env.get("PULSE_SERVER"):
+        owners = []
+        if env.get("XAUTHORITY"):
+            try:
+                owners.append(str(Path(env["XAUTHORITY"]).stat().st_uid))
+            except OSError:
+                pass
+        if env.get("SUDO_UID"):
+            owners.append(env["SUDO_UID"])
+        candidates = [user_runtime / uid / "pulse/native" for uid in owners if uid.isdecimal()]
+        server = next((path for path in candidates if path.is_socket()), None)
+        if server is None:
+            sockets = sorted(path for path in user_runtime.glob("*/pulse/native") if path.is_socket())
+            require(len(sockets) <= 1, "Several desktop audio servers found; set PULSE_SERVER explicitly")
+            server = sockets[0] if sockets else None
+        if server is not None:
+            env["PULSE_SERVER"] = "unix:" + str(server)
+    if env.get("PULSE_SERVER"):
+        env.setdefault("ALSOFT_DRIVERS", "pulse")
+    return env
+
+
 def sandbox_command(root, build, duration, silent):
     # / is read-only. /usr is reconstructed to add /usr/game without creating
     # directories on the VM host. Only the private test runtime is writable.
@@ -187,7 +220,7 @@ def start(args):
         # the native engine. Boot at the JP root unless reproducing that bug.
         if not args.resume_pack:
             (root / "published/folders/.current").write_text("jp/_root\n")
-        env = display_environment()
+        env = audio_environment(display_environment(), args.silent)
         if args.debug:
             env.update(LIBMALI_DEBUG="1", GL_PROXY_DEBUG="1", M2HOOK_DEBUG="1")
         (root / "request.json").unlink(missing_ok=True)
@@ -286,6 +319,8 @@ def inside(args):
         env = os.environ.copy()
         if args.silent:
             env["ALSOFT_DRIVERS"] = "null"
+        print(f"[audio] driver={env.get('ALSOFT_DRIVERS', 'automatic')}, "
+              f"server={env.get('PULSE_SERVER', 'automatic')}", flush=True)
         engine = subprocess.Popen([
             "qemu-arm-static", "-L", "/usr/arm-linux-gnueabihf",
             "-E", f"LD_LIBRARY_PATH={build}:/usr/lib/arm-linux-gnueabihf",

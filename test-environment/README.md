@@ -247,6 +247,40 @@ Regression checked with the original ARM32 engine in the VM:
 
 This validates menu switching, not game/save-state compatibility after a switch.
 
+### Black screen when returning from settings after a pack change
+
+The settings menu autosaves when closing. After JP → US, `regionTag` could still
+be `GAME000`, absent from the incoming `title_prof`. The resulting Squirrel
+exception stopped the menu transition. Region-to-save mappings and the in-memory
+SRAM objects also still belonged to the outgoing pack.
+
+Folder and lineup changes now save the outgoing context before swapping, rebuild
+the incoming title mappings, select a valid game tag, and reload that pack's SRAM
+through the native backup loader. Only SRAM is imported: current menu preferences
+are retained, and the paused emulator is not reinitialized. The hook also updates
+the MD5 stream in `meta_008_0000.bin` after splicing `data_008_0000.bin`; otherwise
+the native loader rejects the modified save. This streams through a 4 KiB buffer,
+uses no heap allocation or crypto library, and runs only when a pack is loaded.
+
+**Deploy the rebuilt hook and title-select script together.** Updating only the
+script leaves the old hook's invalid save digest in place. Existing saves should
+be kept; there is no reset or migration required for valid pack SRAM files.
+
+Checked with the original ARM32 engine in the VM:
+
+1. Open/close settings in JP, switch to US, open/close settings, switch back to JP,
+   and open/close settings again. Both catalogues render correctly afterwards.
+2. Enter SuperGrafx, open/close settings, return to the root; repeat in Namcot.
+3. Switch from Namcot to US, open/close settings, return to JP and repeat.
+4. Compare the entire 1,267,200-byte SRAM slice before/after each settings return
+   in SuperGrafx, Namcot, US and JP: identical, with a valid native save digest.
+
+The asset-free digest tests compare MD5 against Python's implementation at block,
+padding and streaming boundaries, check PSB integer widths and malformed offsets,
+and verify that data, metadata outside the digest, and the metadata inode remain
+unchanged. These checks do not establish in-game SRAM or save-state compatibility
+for every title.
+
 ### Remaining limits
 
 The previous adapter retained fake-device descriptor numbers after `close`,
@@ -277,7 +311,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s test-environment -v
 
 They check input preservation, private saves, rejection of existing destinations
 and symlinks, incomplete packs, missing scripts, unsupported binaries and PID
-reuse, desktop audio-server selection and explicit/silent audio overrides.
+reuse, desktop audio-server selection, explicit/silent audio overrides, and save
+digest updates (a native C compiler is needed for the latter).
 These are complementary to the interactive VM checks.
 
 The ARM32 descriptor-reuse regression can also be run inside the VM, without

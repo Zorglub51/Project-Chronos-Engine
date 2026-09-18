@@ -42,6 +42,10 @@ To test native M2 folder navigation on a Mac without modifying a console, see
 the [Linux VM test environment](./test-environment/README.md). It reuses the
 console hook and published `.psb.m` packs, with private test saves.
 
+The settings-return fix after folder/lineup changes requires both the updated
+`m2hook_print.so` and `mode_title_select.nut.m`. Republish with these assets while
+keeping existing saves; see the [diagnosis and checks](./test-environment/README.md#black-screen-when-returning-from-settings-after-a-pack-change).
+
 For end-user documentation (how the mod works in detail, install/uninstall procedures, troubleshooting), see the [Project Chronos Engine wiki](../../wiki).
 
 ## License

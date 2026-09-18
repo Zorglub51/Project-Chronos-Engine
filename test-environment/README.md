@@ -213,6 +213,41 @@ Interactive checks on the existing Apple Silicon / Parallels VM:
 - local launcher startup with `/media` hidden and all ROMs copied into the VM.
 - audible menu music through the desktop's Pulse-compatible server, with both
   M2 stereo channels active on the VM's playback device after a normal launch.
+- JP → US → JP menu switching with 29 JP entries and 7 US entries, restoring
+  the JP cursor; selecting an empty destination leaves the current menu intact.
+
+### Black screen when changing lineup
+
+The installed US test pack initially contained 200 `DUMMY` items and both
+`titleNum` and `titleNumTG` set to zero. The native carousel assumes at least
+one entry and accesses an empty array during its rebuild. Changing `.current`
+alone only recovers startup; it does not repair that catalogue.
+
+The shipped title-select script now reads the destination root catalogue before
+changing the active pack, cursor, saves or transition animation. An empty or
+unreadable catalogue cancels the switch with the existing rejection sound. The
+check loads only configuration, releases its resource afterwards, and does not
+run each frame or load the destination covers. Resource paths use
+`../../mnt/usb/library/published/folders/<lineup>/_root/title_mode_top.psb`
+because the original engine prefixes resource paths with `/usr/game/`.
+
+For a stale catalogue, republish the intended library and refresh its complete
+set of three pack PSBs while the engine is stopped. Back up existing packs and
+saves first; do not replace `saves/` just to update a catalogue. The affected VM
+was repaired with the seven US entries already present in its source library;
+all seven ROMs were already installed and matched the published files.
+
+Regression checked with the original ARM32 engine in the VM:
+
+1. Keep the empty US pack, start JP, then choose US. The menu stays responsive
+   and `.current` remains `jp/_root`; no folder swap or SRAM splice occurs.
+2. Install the populated US pack and restart. Choose US: the log reports
+   `titleNumTG=7` and all seven covers appear in the TurboGrafx menu.
+3. Choose JP again: the JP catalogue and previous cursor are restored.
+
+This validates menu switching, not game/save-state compatibility after a switch.
+
+### Remaining limits
 
 The previous adapter retained fake-device descriptor numbers after `close`,
 allowing later file reads to be mistaken for I2C reads. It now clears them.

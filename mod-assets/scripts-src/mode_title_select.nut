@@ -53,6 +53,29 @@ s_last_index_per_linenp <- [null, null];
 // (enter), false on csize==11 (exit).
 s_in_folder <- false;
 
+// Inspect the destination before changing mounts, saves or the live menu.
+// An empty pack has 200 DUMMY slots but no carousel entries; constructing
+// MenuModeSelectPkg for it indexes an empty array and leaves a black screen.
+function can_enter_lineup(lineup)
+{
+	local name = (lineup == LINEUP_JP) ? "jp" : "us";
+	// Resource paths are relative to /usr/game, even with a leading slash.
+	local path = "../../mnt/usb/library/published/folders/" + name + "/_root/title_mode_top.psb";
+	local rsc = Resource();
+	local count = 0;
+	try {
+		rsc.load(path);
+		while (rsc.loading) wait(0);
+		local config = rsc.find(path).root;
+		count = config[(lineup == LINEUP_JP) ? "titleNum" : "titleNumTG"];
+	} catch (e) {
+		printf("[FH-LINEUP] cannot read %s: %s\n", path, e.tostring());
+	}
+	rsc.unload();
+	printf("[FH-LINEUP] destination %s has %d entries\n", name, count);
+	return count > 0;
+}
+
 //NEC君の数
 const NECKUN_NUM = 11;
 
@@ -1529,6 +1552,11 @@ class MenuModeTitleSelectSub {
 							break;
 						case 2:
 							//タイトル変更
+							if (!can_enter_lineup((m_current_linenp == LINEUP_JP) ? LINEUP_US : LINEUP_JP)) {
+								::g_menu_sound.on_ng();
+								m_keywait = KEYWAIT;
+								break;
+							}
 							::g_menu_sound.on_power_off();
 							{
 								// FOLDER HACK: per-lineup cursor memory (root-only).
@@ -2896,4 +2924,3 @@ class LinenpChange
 		m_motion.top = 0;
 	}
 }
-

@@ -123,6 +123,22 @@ function refresh_pack_save_context()
     printf("[FH-SAVE] pack context ready: tag=%s regions=%d\n", tag, ::get_game_region_num());
 }
 
+// Used both on first entry and after the in-place lineup rebuild. Folder
+// navigation keeps the same voice playing; only a real game launch pauses it.
+function resume_title_select_bgm()
+{
+    local id = (s_last_linenp == LINEUP_JP) ? "bgm_menu_normal" : "bgm_menu_cdrom";
+    if (::g_menu_sound.get_bgm_id() != id) {
+        ::g_menu_sound.setup_bgm(id);
+        while (!::g_menu_sound.is_bgm_setuped()) wait(0);
+        ::g_menu_sound.play_bgm();
+        ::g_menu_sound.set_bgm_volume(BGM_TITLE_VOLUME);
+    } else {
+        ::g_menu_sound.pause_bgm(false);
+        Sound.animateVoiceVolume(id, BGM_TITLE_VOLUME, FRAME_BGM_TITLE_FADE_OUT, 0);
+    }
+}
+
 //NEC君の数
 const NECKUN_NUM = 11;
 
@@ -469,42 +485,7 @@ function mode_title_select(_menu_motion = null, _start_pad_id = null)
 
   local menu = MenuModeTitleSelect(_start_pad_id);
 
-	if( s_last_linenp == LINEUP_JP )
-	{
-		//日本バージョン
-	  if( ::g_menu_sound.get_bgm_id() != "bgm_menu_normal" ) 
-	  {
-	    ::g_menu_sound.setup_bgm( "bgm_menu_normal" );
-	    while ( !::g_menu_sound.is_bgm_setuped() ) 
-	      wait(0);
-
-	    ::g_menu_sound.play_bgm();
-	    ::g_menu_sound.set_bgm_volume(BGM_TITLE_VOLUME);
-	  }
-	  else
-	  {
-	    ::g_menu_sound.pause_bgm(false);
-	    Sound.animateVoiceVolume("bgm_menu_normal", BGM_TITLE_VOLUME, FRAME_BGM_TITLE_FADE_OUT, 0);
-	  }
-	}
-	else
-	{
-		//海外バージョン
-	  if( ::g_menu_sound.get_bgm_id() != "bgm_menu_cdrom" ) 
-	  {
-	    ::g_menu_sound.setup_bgm( "bgm_menu_cdrom" );
-	    while ( !::g_menu_sound.is_bgm_setuped() ) 
-	      wait(0);
-
-	    ::g_menu_sound.play_bgm();
-	    ::g_menu_sound.set_bgm_volume(BGM_TITLE_VOLUME);
-	  }
-	  else
-	  {
-	    ::g_menu_sound.pause_bgm(false);
-	    Sound.animateVoiceVolume("bgm_menu_cdrom", BGM_TITLE_VOLUME, FRAME_BGM_TITLE_FADE_OUT, 0);
-	  }
-	}
+	::resume_title_select_bgm();
 
 	menu.exec();
 
@@ -626,6 +607,7 @@ class MenuModeTitleSelectBase {
           ::refresh_pack_save_context();
           printf("[FH-EXEC] calling _init() to rebuild menu\n");
           this._init();
+          ::resume_title_select_bgm();
           printf("[FH-EXEC] _init done, retry=true\n");
           retry = true;
         } else {
@@ -1246,7 +1228,6 @@ class MenuModeTitleSelectSub {
 							::g_menu_sound.on_decide(); // SE再生
 							//決定を選択
 								m_keywait = KEYWAIT;		//キー入力ウエイト
-		          ::g_menu_sound.pause_bgm(true);	//BGMフェード
 
 							local csize = getLinenpOffsetConfigData(m_current_index, "csize");
 							printf( "m_current_index = %d, csize = %d\n",m_current_index, csize );
@@ -1258,7 +1239,6 @@ class MenuModeTitleSelectSub {
 							// is bypassed via force_reload in utils.nut).
 							if (csize == 10 || csize == 11) {
 								if (!::g_systemdata.TryAutosave(true)) {
-									::g_menu_sound.pause_bgm(false);
 									wait(0);
 									continue;
 								}
@@ -1313,6 +1293,7 @@ class MenuModeTitleSelectSub {
 								m_selectPkg.setVisible( true );
 							}
 							else {
+							::g_menu_sound.pause_bgm(true);	// actual game launch
 							//演出待ち時間
 							m_isSelectRun = false;		//SELECTも押されている
 							//スーパーシステムカードをシステムカードに変える

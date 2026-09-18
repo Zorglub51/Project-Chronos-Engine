@@ -1,0 +1,119 @@
+"""Safety/regression checks with synthetic data; no original assets needed."""
+import contextlib
+import hashlib
+import io
+from pathlib import Path
+import tempfile
+from types import SimpleNamespace
+import unittest
+from unittest.mock import patch
+
+import native
+
+
+class PrepareTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name)
+        self.data = self.base / "stock"
+        self.published = self.base / "published"
+        self.support = self.base / "support"
+        self.repo = self.base / "repo"
+        self.destination = self.base / "test copy with spaces"
+        self.put(self.data / "system/script/init.nut.m", b"stock init")
+        self.put(self.data / "040/config/title_prof.psb.m", b"stock config")
+        self.put(self.data / "system/roms/stock.pce.m", b"stock ROM")
+        self.put(self.support / "version", b"1006JP")
+        self.put(self.support / "shutdown.png", b"image")
+        self.binary = self.support / "m2engage"
+        self.put(self.binary, b"synthetic engine")
+        self.pack = self.published / "folders/jp/_root"
+        for name in ("title_prof.psb.m", "title_mode_top.psb.m", "title_jp_titleselect_jp.psb.m"):
+            self.put(self.pack / name, b"published pack")
+        self.put(self.pack / "saves/real-save.bin", b"important user save")
+        self.put(self.published / "roms/custom.pce", b"custom ROM")
+        self.put(self.published / "folders/.current", b"jp/FOLDER_OTHER\n")
+        for name in native.PATCHES:
+            self.put(self.repo / "mod-assets/scripts-built" / name, b"Chronos patch")
+        self.args = SimpleNamespace(runtime=self.destination, data=self.data, published=self.published,
+                                    binary=self.binary, support=self.support)
+        digest = hashlib.sha256(self.binary.read_bytes()).hexdigest()
+        for mock in (patch.object(native, "REPO", self.repo),
+                     patch.dict(native.SUPPORTED_BINARIES, {digest: "test fixture"}, clear=True)):
+            mock.start()
+            self.addCleanup(mock.stop)
+
+    @staticmethod
+    def put(path, data):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+
+    def prepare(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            native.prepare(self.args)
+
+    def snapshot_sources(self):
+        return {p: p.read_bytes() for tree in (self.data, self.published, self.support, self.repo)
+                for p in tree.rglob("*") if p.is_file()}
+
+    def test_preparation_preserves_inputs_and_excludes_user_saves(self):
+        before = self.snapshot_sources()
+        self.prepare()
+        self.assertEqual(before, self.snapshot_sources())
+        self.assertEqual([], list((self.destination / "game/save").iterdir()))
+        self.assertEqual([], list((self.destination / "published/folders/jp/_root/saves").iterdir()))
+        self.assertEqual("jp/_root\n", (self.destination / "published/folders/.current").read_text())
+        self.assertTrue((self.destination / "game/system/roms/custom.pce").is_symlink())
+        self.assertTrue((self.destination / "game/system/roms/stock.pce.m").is_symlink())
+        private_config = self.destination / "game/040/config/title_prof.psb.m"
+        private_config.write_bytes(b"modified privately")
+        self.assertEqual(before, self.snapshot_sources())
+        self.assertEqual(self.destination.resolve(), native.runtime(self.destination))
+
+    def test_existing_directory_is_not_overwritten(self):
+        self.put(self.destination / "valuable", b"keep")
+        with self.assertRaisesRegex(RuntimeError, "already exists"):
+            self.prepare()
+        self.assertEqual(b"keep", (self.destination / "valuable").read_bytes())
+
+    def test_dangling_destination_symlink_is_not_followed(self):
+        target = self.base / "not-created"
+        self.destination.symlink_to(target)
+        with self.assertRaisesRegex(RuntimeError, "already exists"):
+            self.prepare()
+        self.assertFalse(target.exists())
+
+    def test_output_under_input_is_rejected_before_writing(self):
+        self.args.runtime = self.data / "output"
+        with self.assertRaisesRegex(RuntimeError, "outside input"):
+            self.prepare()
+        self.assertFalse(self.args.runtime.exists())
+
+    def test_wrong_binary_fails_before_copy(self):
+        self.binary.write_bytes(b"unknown firmware")
+        with self.assertRaisesRegex(RuntimeError, "Unsupported binary"):
+            self.prepare()
+        self.assertFalse(self.destination.exists())
+
+    def test_incomplete_pack_fails_before_copy(self):
+        (self.pack / "title_mode_top.psb.m").unlink()
+        with self.assertRaisesRegex(RuntimeError, "Incomplete pack"):
+            self.prepare()
+        self.assertFalse(self.destination.exists())
+
+    def test_missing_patch_fails_before_copy(self):
+        (self.repo / "mod-assets/scripts-built/utils.nut.m").unlink()
+        with self.assertRaisesRegex(RuntimeError, "Missing Chronos script"):
+            self.prepare()
+        self.assertFalse(self.destination.exists())
+
+    def test_pid_reuse_does_not_target_an_unrelated_process(self):
+        self.destination.mkdir()
+        (self.destination / "session.json").write_text('{"pid": 123, "start_time": "old"}')
+        with patch.object(native, "identity", return_value="new"):
+            self.assertIsNone(native.active(self.destination))
+
+
+if __name__ == "__main__":
+    unittest.main()

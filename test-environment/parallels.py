@@ -37,7 +37,13 @@ def main():
         command += extra
     # prlctl joins exec arguments into a guest shell command. Quote every token
     # explicitly: normal subprocess argument boundaries alone are insufficient.
-    result = subprocess.call([prlctl, "exec", args.vm, shlex.join(command)])
+    guest_command = shlex.join(command)
+    if args.command in ("start", "stop", "status", "key", "screenshot"):
+        local_runner = str(base / "native.py")
+        local_command = shlex.join(["python3", local_runner, *command[2:]])
+        guest_command = (f"if [ -f {shlex.quote(local_runner)} ]; then {local_command}; "
+                         f"else {guest_command}; fi")
+    result = subprocess.call([prlctl, "exec", args.vm, guest_command])
     if result == 0 and args.command == "screenshot":
         out = repo / "test-environment/.work/screenshot.ppm"
         out.parent.mkdir(exist_ok=True)

@@ -1,0 +1,25 @@
+#!/bin/sh
+# Installed next to native.py, build/ and runtime/ on the VM's own disk.
+set -eu
+base_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ "$(id -u)" -ne 0 ]; then
+    exec sudo -- "$base_dir/chronos" "$@"
+fi
+action=${1:-start}
+if [ "$#" -gt 0 ]; then shift; fi
+case "$action" in
+    start)
+        exec /usr/bin/python3 "$base_dir/native.py" start \
+            --runtime "$base_dir/runtime" --build "$base_dir/build" --silent "$@"
+        ;;
+    stop|status|key|screenshot)
+        exec /usr/bin/python3 "$base_dir/native.py" "$action" --runtime "$base_dir/runtime" "$@"
+        ;;
+    log)
+        exec tail -n 100 "$base_dir/runtime/session.log"
+        ;;
+    *)
+        echo "Usage: $0 [start|stop|status|key|screenshot|log] [options]" >&2
+        exit 2
+        ;;
+esac

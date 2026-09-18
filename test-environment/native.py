@@ -148,6 +148,10 @@ def sandbox_command(root, build, duration, silent):
             cmd += ["--symlink", os.readlink(path), str(path)]
         else:
             cmd += ["--ro-bind", str(path), str(path)]
+    # Self-contained installs do not expose the shared Mac home at all. This
+    # also catches accidental dependencies on it when testing a local launch.
+    if json.loads((root / MARKER).read_text()).get("self_contained"):
+        cmd += ["--tmpfs", "/media"]
     cmd += ["--dir", "/usr"]
     for path in sorted(Path("/usr").iterdir()):
         if path.name != "game":

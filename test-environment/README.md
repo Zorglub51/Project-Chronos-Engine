@@ -117,6 +117,30 @@ overwriting an existing runtime. Build into that new root too. The old
 
 ## Directly inside Linux
 
+For an existing prepared runtime, install a local launcher and copy linked ROMs
+onto the VM disk **once**, while the test session is stopped:
+
+```sh
+sudo python3 test-environment/install-local.py --root /home/parallels/chronos-native
+```
+
+After installation, run these commands in Ubuntu, from any working directory:
+
+```sh
+~/chronos-native/chronos
+~/chronos-native/chronos stop
+~/chronos-native/chronos status
+```
+
+The launcher requests `sudo` when needed and defaults to silent audio. It uses
+only the VM's local `native.py`, binaries, packs and copied ROMs; the shared Mac
+folder is no longer needed. The original test saves are kept. Local sessions
+also hide `/media` inside their mount namespace to detect accidental reliance
+on the Mac share. They do not unmount the share for the rest of Ubuntu.
+
+To update the installed launcher, stop it and rerun `install-local.py` from an
+updated checkout. To update games/packs, prepare a new runtime as described above.
+
 The same harness works without Parallels Tools:
 
 ```sh
@@ -178,6 +202,7 @@ Interactive checks on the existing Apple Silicon / Parallels VM:
 - SELECT + RUN opens the original in-game menu, and its return action restores
   the game catalogue;
 - restart with existing private test data, without debug mode.
+- local launcher startup with `/media` hidden and all ROMs copied into the VM.
 
 The previous adapter retained fake-device descriptor numbers after `close`,
 allowing later file reads to be mistaken for I2C reads. It now clears them.

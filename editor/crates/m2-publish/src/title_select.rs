@@ -4,12 +4,12 @@
 // as input, KEEP its existing source/textures (tex#000, tex#001 — referenced
 // from motion/sg, motion/soft31..33, the plus layer, thumb), and ADD new
 // textures starting at the next free tex#NNN index for each new cover. Replace
-// only `front.layer[0].frameList` with frames pointing to the new textures,
+// `front.layer[0].frameList` AND `sg.layer[0].frameList` with frames pointing to the new textures,
 // then bump `lastTime` / `parameter[0].{division,rangeEnd}` / `priority[1].time`
 // accordingly.
 //
-// This matches the Project-Chronos-Editor approach (gameList.gd:_on_add_button_pressed).
-// See docs/cover_sheet_format.md for the full reference.
+// `sg` supplies the HuCard label during boot_sg. Its pkg parameter must follow
+// the same image indices as front, including a folder's leading back card.
 //
 // Reasoning: writing the cover sheet from scratch is brittle — the JP cover
 // sheet has motion sections (sg, soft31..33, plus) whose frames reference the
@@ -52,8 +52,8 @@ pub struct GenInputs<'a> {
     /// Decoded PSB bytes of the stock template. For JP folder packs use
     /// `040/motion/title_jp_titleselect_jp.psb.m`; for US use
     /// `040/motion/title_jp_titleselect_us.psb.m`. The template's textures and
-    /// motion graph are preserved verbatim — we only append new textures and
-    /// rewrite `front.layer[0].frameList`.
+    /// other motions are preserved — we append new textures and rebuild the
+    /// image-indexed frames in `front` and `sg` (SuperGrafx launch labels).
     pub template_psb: &'a [u8],
 }
 
@@ -195,32 +195,74 @@ fn splice_into_tree(
         source.insert(k, v);
     }
 
-    // 2. Replace front.layer[0].frameList; bump timing fields.
+    // 2. The carousel and SuperGrafx boot label both use the item's `image`
+    // as their `pkg` parameter. Rebuild both lookup tracks, sharing textures.
     let object = expect_obj_field_mut(root, "object")?;
     let pkg = expect_obj_field_mut(object, "pkg")?;
     let motion = expect_obj_field_mut(pkg, "motion")?;
     let front = expect_obj_field_mut(motion, "front")?;
+    replace_image_frames(front, new_frames.clone(), last_time)?;
 
-    front.insert("lastTime".into(), Value::Int(last_time));
+    // Retail US sheets have no sg motion (no stock SGX games). Their first
+    // front layer has the same sprite-track schema, so use it as a one-layer
+    // sg template. The shared boot_sg animation also asks for pkg/sg in bg_us.
+    if !motion.contains_key("sg") {
+        let mut sg = expect_obj_field(motion, "front")?.clone();
+        let layers = expect_array_field_mut(&mut sg, "layer")?;
+        layers.truncate(1);
+        let layer = expect_obj(&layers[0], "front.layer[0]")?;
+        let label = match layer.get("label") {
+            Some(Value::String(label)) => label.clone(),
+            _ => return Err(Error::Template("title_select: front layer label missing".into())),
+        };
+        sg.insert("layerIndexMap".into(), Value::Object(IndexMap::from([
+            (label, Value::Int(0)),
+        ])));
+        sg.insert("priority".into(), Value::Array(vec![
+            Value::Object(IndexMap::from([
+                ("content".into(), Value::Array(vec![Value::Int(0)])),
+                ("time".into(), Value::Int(0)),
+                ("type".into(), Value::Int(1)),
+            ])),
+            Value::Object(IndexMap::from([
+                ("content".into(), Value::Null),
+                ("time".into(), Value::Int(last_time)),
+                ("type".into(), Value::Int(1)),
+            ])),
+        ]));
+        motion.insert("sg".into(), Value::Object(sg));
+    }
+    let sg = expect_obj_field_mut(motion, "sg")?;
+    replace_image_frames(sg, new_frames, last_time)?;
 
-    if let Some(Value::Array(parameter)) = front.get_mut("parameter") {
+    Ok(())
+}
+
+fn replace_image_frames(
+    motion: &mut IndexMap<String, Value>,
+    new_frames: Vec<Value>,
+    last_time: i64,
+) -> Result<(), Error> {
+    motion.insert("lastTime".into(), Value::Int(last_time));
+
+    if let Some(Value::Array(parameter)) = motion.get_mut("parameter") {
         if let Some(Value::Object(p0)) = parameter.get_mut(0) {
             p0.insert("division".into(), Value::Int(last_time - 1));
             p0.insert("rangeEnd".into(), Value::Int(last_time - 1));
         }
     }
-    if let Some(Value::Array(priority)) = front.get_mut("priority") {
+    if let Some(Value::Array(priority)) = motion.get_mut("priority") {
         if let Some(Value::Object(p1)) = priority.get_mut(1) {
             p1.insert("time".into(), Value::Int(last_time));
         }
     }
 
-    let layer = expect_array_field_mut(front, "layer")?;
+    let layer = expect_array_field_mut(motion, "layer")?;
     let layer0 = match layer.get_mut(0) {
         Some(Value::Object(o)) => o,
         _ => {
             return Err(Error::Template(
-                "title_select template: front.layer[0] missing or not an object".into(),
+                "title_select template: image motion layer[0] missing or not an object".into(),
             ))
         }
     };
@@ -308,4 +350,163 @@ fn load_cover_rgba_bgra(path: &std::path::Path) -> Result<(Vec<u8>, u32, u32), E
     let rgba = img.to_rgba8();
     let (w, h) = rgba.dimensions();
     Ok((rgba.into_raw(), w, h))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn value(j: serde_json::Value) -> Value {
+        match j {
+            serde_json::Value::Null => Value::Null,
+            serde_json::Value::Bool(b) => Value::Bool(b),
+            serde_json::Value::Number(n) => n.as_i64().map(Value::Int)
+                .unwrap_or_else(|| Value::Float(n.as_f64().unwrap())),
+            serde_json::Value::String(s) => Value::String(s),
+            serde_json::Value::Array(a) => Value::Array(a.into_iter().map(value).collect()),
+            serde_json::Value::Object(o) => Value::Object(o.into_iter().map(|(k, v)| (k, value(v))).collect()),
+        }
+    }
+
+    // Synthetic schema matching the stock lookup tracks; no original assets.
+    fn template(with_sg: bool) -> Value {
+        let track = json!({
+            "lastTime": 51, "loopTime": -1,
+            "parameter": [{"id":"pkg", "rangeBegin":0, "rangeEnd":50, "division":50}],
+            "priority": [{"time":0,"type":1,"content":[0]}, {"time":51,"type":1,"content":null}],
+            "layerIndexMap": {"front_00":0},
+            "layer": [{"label":"front_00", "inheritMask":33556476, "frameList":[
+                {"time":0,"type":2,"content":{"src":"front","icon":"legacy-unresolved","mask":0}},
+                {"time":7,"type":2,"content":{"src":"tex#001","icon":"0045","mask":0}},
+                {"time":25,"type":2,"content":{"src":"tex#000","icon":"0000","mask":0}},
+                {"time":51,"type":0}
+            ]}]
+        });
+        let mut j = json!({
+            "source": {
+                "tex#000": {"texture":{"pixel":null}},
+                "tex#001": {"texture":{"pixel":null}}
+            },
+            "object":{"pkg":{"motion":{
+                "front":track.clone(), "thumb":{"marker":"keep thumb"},
+                "soft31":{"marker":"keep auxiliary motion"}
+            }}}
+        });
+        if with_sg {
+            j["object"]["pkg"]["motion"]["sg"] = track;
+        }
+        // A second carousel layer must never leak into the boot label motion.
+        let front = &mut j["object"]["pkg"]["motion"]["front"];
+        front["layer"].as_array_mut().unwrap().push(json!({
+            "label":"plus", "frameList":[{"time":0,"type":0}]
+        }));
+        front["layerIndexMap"]["plus"] = json!(1);
+        front["priority"][0]["content"] = json!([1,0]);
+        let mut tree = value(j);
+        let root = expect_obj_mut(&mut tree, "root").unwrap();
+        let source = expect_obj_field_mut(root, "source").unwrap();
+        for (name, index) in [("tex#000", 1), ("tex#001", 0)] {
+            let tex = expect_obj_field_mut(source, name).unwrap();
+            expect_obj_field_mut(tex, "texture").unwrap().insert("pixel".into(), Value::Stream(Stream {
+                index, data: vec![index as u8, 20, 30, 255],
+            }));
+        }
+        tree
+    }
+
+    struct Covers(std::path::PathBuf);
+    impl Covers {
+        fn new() -> Self {
+            static ID: AtomicUsize = AtomicUsize::new(0);
+            let dir = std::env::temp_dir().join(format!("chronos-cover-test-{}-{}",
+                std::process::id(), ID.fetch_add(1, Ordering::Relaxed)));
+            std::fs::create_dir(&dir).unwrap();
+            Self(dir)
+        }
+        fn entries(&self, n: usize) -> Vec<CoverEntry> {
+            (0..n).map(|i| {
+                let path = self.0.join(format!("{i}.png"));
+                image::RgbaImage::from_pixel(2, 2, image::Rgba([i as u8, 40, 80, 255]))
+                    .save(&path).unwrap();
+                CoverEntry { cover_path: path, cover_size: None, label: format!("slot {i}") }
+            }).collect()
+        }
+    }
+    impl Drop for Covers {
+        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+    }
+
+    fn generated(template: &Value, covers: &[CoverEntry]) -> Value {
+        let psb = m2_psb::write(template, 4).unwrap();
+        let generated = generate(&GenInputs { games: covers, template_psb: &psb }).unwrap();
+        // Check the packed artifact too: catches serialization/stream issues.
+        let filename = "title_jp_titleselect_jp.psb.m";
+        let packed = m2_mzs::pack_default(&generated, filename).unwrap();
+        m2_psb::read(&m2_mzs::unpack_default(&packed, filename).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn sg_labels_follow_folder_indices_and_use_the_same_pixels_as_front() {
+        let assets = Covers::new();
+        let covers = assets.entries(3); // back, Daimakaimura, Aldynes
+        let before = template(true);
+        let after = generated(&before, &covers);
+        let j = after.to_json();
+        let motions = &j["object"]["pkg"]["motion"];
+        let front = &motions["front"]["layer"][0]["frameList"];
+        let sg = &motions["sg"]["layer"][0]["frameList"];
+        for index in [1, 2] {
+            assert_eq!(sg[index]["time"], index);
+            assert_eq!(sg[index]["content"], front[index]["content"]);
+            assert_eq!(sg[index]["content"]["src"], format!("tex#{:03}", index + 2));
+        }
+        assert_eq!(sg.as_array().unwrap().len(), 4); // no stale 7/25 frames
+        assert_eq!(motions["sg"]["lastTime"], motions["front"]["lastTime"]);
+        assert_eq!(motions["sg"]["parameter"], motions["front"]["parameter"]);
+        assert_eq!(motions["sg"]["priority"][1]["time"], sg[3]["time"]);
+        let original = before.to_json();
+        assert_eq!(motions["thumb"], original["object"]["pkg"]["motion"]["thumb"]);
+        assert_eq!(motions["soft31"], original["object"]["pkg"]["motion"]["soft31"]);
+        assert_eq!(motions["front"]["layer"][1], original["object"]["pkg"]["motion"]["front"]["layer"][1]);
+        let source = expect_obj_field(expect_obj(&after, "root").unwrap(), "source").unwrap();
+        let old_source = expect_obj_field(expect_obj(&before, "root").unwrap(), "source").unwrap();
+        assert_eq!(source.len(), 5); // two stock atlases + three covers, no SGX duplicates
+        for name in ["tex#000", "tex#001"] { assert_eq!(source[name], old_source[name]); }
+        for i in 0..3 {
+            let tex = expect_obj_field(source, &format!("tex#{:03}", i + 2)).unwrap();
+            let texture = expect_obj_field(tex, "texture").unwrap();
+            let Value::Stream(stream) = &texture["pixel"] else { panic!("missing pixels") };
+            assert_eq!(stream.data, [i as u8, 40, 80, 255].repeat(4));
+        }
+    }
+
+    #[test]
+    fn moved_games_at_late_indices_do_not_keep_stock_sg_labels() {
+        let assets = Covers::new();
+        let covers = assets.entries(50);
+        let j = generated(&template(true), &covers).to_json();
+        let sg = &j["object"]["pkg"]["motion"]["sg"];
+        let frames = sg["layer"][0]["frameList"].as_array().unwrap();
+        for index in [0, 7, 25, 31, 49] {
+            assert_eq!(frames[index]["time"], index);
+            assert_eq!(frames[index]["content"]["src"], format!("tex#{:03}", index + 2));
+        }
+        assert_eq!(frames[50], json!({"time":52,"type":0}));
+        assert_eq!(sg["parameter"][0]["rangeEnd"], 51);
+    }
+
+    #[test]
+    fn template_without_sg_gets_a_single_layer_label_track() {
+        let assets = Covers::new();
+        let covers = assets.entries(2);
+        let j = generated(&template(false), &covers).to_json();
+        let motions = &j["object"]["pkg"]["motion"];
+        assert_eq!(motions["sg"]["layer"].as_array().unwrap().len(), 1);
+        assert_eq!(motions["sg"]["layerIndexMap"], json!({"front_00":0}));
+        assert_eq!(motions["sg"]["priority"][0]["content"], json!([0]));
+        assert_eq!(motions["sg"]["layer"][0]["frameList"], motions["front"]["layer"][0]["frameList"]);
+        assert_eq!(motions["front"]["layer"].as_array().unwrap().len(), 2);
+    }
 }

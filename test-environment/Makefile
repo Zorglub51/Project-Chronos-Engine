@@ -10,7 +10,7 @@ all: $(BUILD)/gl_proxy $(BUILD)/libMali.so $(BUILD)/m2hook_print.so
 $(BUILD):
 	mkdir -p "$@"
 
-$(BUILD)/gl_proxy: graphics/gl_proxy.c graphics/gl_protocol.h | $(BUILD)
+$(BUILD)/gl_proxy: graphics/gl_proxy.c graphics/gl_protocol.h graphics/frame_pacing.h | $(BUILD)
 	$(CC) $(CFLAGS) -o "$@" $< -lEGL -lGLESv2 -lX11 -lgbm -lpthread -lrt
 
 $(BUILD)/libMali.so: graphics/libMali_x11.c graphics/gl_protocol.h | $(BUILD)
@@ -22,6 +22,10 @@ $(BUILD)/m2hook_print.so: ../console-mod/hook-src/m2hook_print.c ../console-mod/
 $(BUILD)/test_fd_reuse: test_fd_reuse.c | $(BUILD)
 	$(ARMCC) -O2 -Wall -Wextra -o "$@" $<
 
-check: $(BUILD)/libMali.so $(BUILD)/test_fd_reuse
+$(BUILD)/test_frame_pacing: test_frame_pacing.c graphics/frame_pacing.h | $(BUILD)
+	$(CC) $(CFLAGS) -o "$@" $<
+
+check: $(BUILD)/libMali.so $(BUILD)/test_fd_reuse $(BUILD)/test_frame_pacing
 	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v test_native test_save_digest
+	"$(BUILD)/test_frame_pacing"
 	qemu-arm-static -L /usr/arm-linux-gnueabihf -E LD_PRELOAD=$(abspath $(BUILD))/libMali.so "$(BUILD)/test_fd_reuse"

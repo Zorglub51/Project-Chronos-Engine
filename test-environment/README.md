@@ -305,6 +305,30 @@ Two-second samples after each transition measured roughly 1,380–1,560 RMS on
 both 16-bit channels, including the US and JP returns. Before the fix, the same
 folder entry and subsequent lineup change produced exactly zero PCM output.
 
+### VM frame pacing and slow audio
+
+The surfaceless renderer presents through X11; it does not have the console's
+Mali display/vblank wait. Removing its frame limiter is not a way to recover
+normal speed: a VM test produced 103–136 presentations/s in the menu and 87–100
+in The Kung Fu, with the game advancing faster than the limited runs.
+
+The proxy now advances absolute 60 Hz deadlines instead of starting each period
+at the previous actual wake time. A scheduler delay therefore no longer slows
+every subsequent frame and reduces the engine's audio production rate. Catch-up
+is limited to one frame; a long stall or VM suspension resets the deadline.
+Interrupted sleeps resume waiting for the same deadline. This affects only
+`test-environment/graphics/gl_proxy.c`, not the console hook, menu scripts or M2
+binary. Rebuild `gl_proxy` and restart the local session to apply it.
+
+The deterministic pacing test injects 0.75 ms of oversleep for 600 frames: the
+deadline remains ten seconds from the start instead of drifting by 450 ms. It
+also checks recovery from a short delay, a five-second stall and second-boundary
+crossings. Interactive VM checks commonly reached 57–60 presentations/s in
+The Kung Fu with this correction, but three-second samples also fell to 42–44
+in the menu or game under substantial host memory pressure. This is not a guarantee of steady 60 Hz
+or uninterrupted audio on an overloaded host. Compare the same game with the
+same host load before attributing a slowdown to the published pack scripts.
+
 ### Remaining limits
 
 The previous adapter retained fake-device descriptor numbers after `close`,

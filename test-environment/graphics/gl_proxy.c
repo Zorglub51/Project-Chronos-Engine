@@ -30,6 +30,7 @@
 #include <X11/keysym.h>
 #include <linux/input-event-codes.h>
 #include "gl_protocol.h"
+#include "frame_pacing.h"
 
 static int g_debug = 0;
 #define DBG(...) do { if (g_debug) fprintf(stderr, "[gl_proxy] " __VA_ARGS__); } while(0)
@@ -63,8 +64,7 @@ static struct gl_shm *shm = NULL;
 /* FPS tracking & frame limiter */
 static int swap_count = 0;
 static struct timespec fps_start;
-static struct timespec frame_prev;
-#define FRAME_NS (1000000000 / 60)  /* 16.67ms for 60 FPS */
+static int64_t frame_deadline_ns;
 
 #define FRAME_BYTES (RENDER_WIDTH * RENDER_HEIGHT * 4)
 
@@ -494,22 +494,21 @@ static void dispatch_command(uint16_t cmd_id, uint16_t flags, uint32_t body_size
                   RENDER_WIDTH, RENDER_HEIGHT);
         XFlush(x_dpy);
 
-        /* Frame limiter: sleep until 16.67ms since last swap */
+        /* Keep absolute frame deadlines: scheduler oversleep must not lower
+         * the emulated clock or starve audio on every following frame. Allow
+         * at most one frame of catch-up after a stall. */
         {
             struct timespec now;
             clock_gettime(CLOCK_MONOTONIC, &now);
-            long elapsed_ns = (now.tv_sec - frame_prev.tv_sec) * 1000000000L +
-                              (now.tv_nsec - frame_prev.tv_nsec);
-            if (elapsed_ns < FRAME_NS) {
-                struct timespec target = frame_prev;
-                target.tv_nsec += FRAME_NS;
-                if (target.tv_nsec >= 1000000000L) {
-                    target.tv_sec++;
-                    target.tv_nsec -= 1000000000L;
-                }
-                clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &target, NULL);
+            int64_t now_ns = (int64_t)now.tv_sec * 1000000000 + now.tv_nsec;
+            frame_deadline_ns = frame_next_deadline(frame_deadline_ns, now_ns);
+            if (now_ns < frame_deadline_ns) {
+                struct timespec target = {
+                    .tv_sec = frame_deadline_ns / 1000000000,
+                    .tv_nsec = frame_deadline_ns % 1000000000
+                };
+                while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &target, NULL) == EINTR) {}
             }
-            clock_gettime(CLOCK_MONOTONIC, &frame_prev);
         }
 
         /* FPS tracking */
@@ -1150,7 +1149,7 @@ int main(int argc, char **argv) {
 
     /* Mark proxy as ready */
     clock_gettime(CLOCK_MONOTONIC, &fps_start);
-    frame_prev = fps_start;
+    frame_deadline_ns = (int64_t)fps_start.tv_sec * 1000000000 + fps_start.tv_nsec;
     __atomic_store_n(&shm->proxy_ready, 1, __ATOMIC_RELEASE);
     fprintf(stderr, "[gl_proxy] Ready, waiting for commands...\n");
 

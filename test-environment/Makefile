@@ -16,12 +16,12 @@ $(BUILD)/gl_proxy: graphics/gl_proxy.c graphics/gl_protocol.h | $(BUILD)
 $(BUILD)/libMali.so: graphics/libMali_x11.c graphics/gl_protocol.h | $(BUILD)
 	$(ARMCC) $(CFLAGS) -shared -fPIC -o "$@" $< -ldl -lpthread -lrt
 
-$(BUILD)/m2hook_print.so: ../console-mod/hook-src/m2hook_print.c | $(BUILD)
+$(BUILD)/m2hook_print.so: ../console-mod/hook-src/m2hook_print.c ../console-mod/hook-src/save_digest.h ../console-mod/hook-src/md5.h | $(BUILD)
 	$(ARMCC) $(CFLAGS) -shared -fPIC -mcpu=cortex-a7 -mfpu=neon-vfpv4 -mfloat-abi=hard -o "$@" $< -ldl
 
 $(BUILD)/test_fd_reuse: test_fd_reuse.c | $(BUILD)
 	$(ARMCC) -O2 -Wall -Wextra -o "$@" $<
 
 check: $(BUILD)/libMali.so $(BUILD)/test_fd_reuse
-	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v test_native
+	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v test_native test_save_digest
 	qemu-arm-static -L /usr/arm-linux-gnueabihf -E LD_PRELOAD=$(abspath $(BUILD))/libMali.so "$(BUILD)/test_fd_reuse"

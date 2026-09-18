@@ -76,6 +76,53 @@ function can_enter_lineup(lineup)
 	return count > 0;
 }
 
+// Complete the script-side half of a native pack swap. The hook replaces
+// files and the on-disk SRAM slice, but Squirrel still owns the old mappings,
+// active regionTag and SRAM objects. Refresh them before settings can autosave.
+function refresh_pack_save_context()
+{
+    ::s_current_title_prof = null;
+    ::s_package_title_prof = null;
+    ::s_rsc_title = null;
+    foreach (name in ["title_prof", "title_prof_specdepend", "title_mode_top"]) {
+        local path = ::conv_path("config/" + name + ".psb");
+        if (path in ::s_loaded_config) ::s_loaded_config.rawdelete(path);
+    }
+    ::_del_game_content_config();
+    System.clearResourceCache();
+    ::_init_game_content_config();
+
+    local versions = ::get_current_title_prof().m2epi.version;
+    local tag = ::g_systemdata.get_data_setting_etc__game_regionTag();
+    if (!(tag in versions) || versions[tag].arch == "folder") {
+        tag = ::get_first_game_regionTag();
+        local first = 0x7fffffff;
+        foreach (candidate, index in ::s_gameRegionTags) {
+            if (index < first && versions[candidate].arch != "folder") {
+                tag = candidate;
+                first = index;
+            }
+        }
+        ::g_systemdata.set_data_setting_etc__game_regionTag(tag);
+    }
+
+    // Read the slice installed by the hook without restoring old menu flags
+    // or applying SRAM to the paused emulator from the previous pack.
+    local control = ::get_backup_control(BackupSegmentTypes.TITLE_DATA);
+    local segment = control.get_backup_segment(BackupSegmentTypes.TITLE_DATA);
+    if (!control.load_single(segment, true)) throw "Cannot load incoming pack saves";
+    while (segment.running) wait(0);
+    if (!segment.success) throw "Incoming pack saves could not be read";
+    local saved = ::g_systemdata.get_current_backup_struct_title_value()[SYSTEMDATA_KEY_SRAM_DATA];
+    local sram = ::g_systemdata.get_value(SystemDataValueIndex.SRAM_DATA);
+    sram.init(); // resize per-game SRAM objects for the new pack's indices
+    if (!BinaryUtil.CopyStructValue(sram.get_current_data(), saved))
+        throw "Cannot copy incoming pack SRAM";
+    sram.load_from_struct(saved);
+    sram.complete(false);
+    printf("[FH-SAVE] pack context ready: tag=%s regions=%d\n", tag, ::get_game_region_num());
+}
+
 //NEC君の数
 const NECKUN_NUM = 11;
 
@@ -576,6 +623,7 @@ class MenuModeTitleSelectBase {
           // by the toggle in m_menu) — the new MenuModeTitleSelectSub takes
           // current_linenp as a constructor arg, so it must be correct.
           m_current_linenp = s_last_linenp;
+          ::refresh_pack_save_context();
           printf("[FH-EXEC] calling _init() to rebuild menu\n");
           this._init();
           printf("[FH-EXEC] _init done, retry=true\n");
@@ -1209,6 +1257,11 @@ class MenuModeTitleSelectSub {
 							// rebuild that follows reloads the swapped PSBs (the cache
 							// is bypassed via force_reload in utils.nut).
 							if (csize == 10 || csize == 11) {
+								if (!::g_systemdata.TryAutosave(true)) {
+									::g_menu_sound.pause_bgm(false);
+									wait(0);
+									continue;
+								}
 								// Fade the outgoing pack out before the swap. The rebuild
 								// below constructs a fresh m_selectPkg with fadeIn=true so
 								// the new pack fades up symmetrically.
@@ -1226,44 +1279,7 @@ class MenuModeTitleSelectSub {
 									::s_in_folder = false;
 								}
 
-								// Refresh title_prof and everything derived from it. Required
-								// because each pack's title_prof has its own indices in
-								// game_versions[*][0]; SRAM/save lookups go through
-								// s_gameRegionTags which is built once at boot.
-								//
-								// Order matters:
-								//  1. release the script-level merged copy
-								//  2. release the ResourceCache that pins title_prof.psb
-								//     ACTIVE in the engine — without this, clearResourceCache
-								//     can't evict it (it only drops idle entries)
-								//  3. release derived state (s_gameRegionTags, etc.)
-								//  4. clear the engine cache so next read goes to disk
-								//  5. re-run init which rebuilds everything from the
-								//     now-current on-disk title_prof
-								printf("[FH-REFRESH] step A: null s_current_title_prof / s_rsc_title\n");
-								::s_current_title_prof = null;
-								::s_rsc_title = null;
-								// s_loaded_config (utils.nut) holds a ResourceCache per loaded
-								// PSB path. Even with force_reload=true, the OLD cache entry
-								// stays alive until we explicitly delete the slot — and while
-								// it's alive, title_prof.psb stays ACTIVE in the engine and
-								// clearResourceCache can't evict it. Drop the relevant slots.
-								printf("[FH-REFRESH] step A2: drop s_loaded_config slots\n");
-								local tp_path  = ::conv_path("config/title_prof.psb");
-								local tps_path = ::conv_path("config/title_prof_specdepend.psb");
-								local tmt_path = ::conv_path("config/title_mode_top.psb");
-								if (tp_path  in ::s_loaded_config) ::s_loaded_config.rawdelete(tp_path);
-								if (tps_path in ::s_loaded_config) ::s_loaded_config.rawdelete(tps_path);
-								if (tmt_path in ::s_loaded_config) ::s_loaded_config.rawdelete(tmt_path);
-								printf("[FH-REFRESH] step B: _del_game_content_config\n");
-								try { ::_del_game_content_config(); printf("[FH-REFRESH] step B ok\n"); }
-								catch (e) { printf("[FH-REFRESH] step B EXC: %s\n", e); }
-								printf("[FH-REFRESH] step C: System.clearResourceCache\n");
-								try { System.clearResourceCache(); printf("[FH-REFRESH] step C ok\n"); }
-								catch (e) { printf("[FH-REFRESH] step C EXC: %s\n", e); }
-								printf("[FH-REFRESH] step D: _init_game_content_config\n");
-								try { ::_init_game_content_config(); printf("[FH-REFRESH] step D ok\n"); }
-								catch (e) { printf("[FH-REFRESH] step D EXC: %s\n", e); }
+								::refresh_pack_save_context();
 
 								// Re-read top-level config from the now-swapped file
 								// (utils.nut sets force_reload=true, so the script-level
@@ -1557,6 +1573,7 @@ class MenuModeTitleSelectSub {
 								m_keywait = KEYWAIT;
 								break;
 							}
+							if (!::g_systemdata.TryAutosave(true)) break;
 							::g_menu_sound.on_power_off();
 							{
 								// FOLDER HACK: per-lineup cursor memory (root-only).
@@ -1587,9 +1604,9 @@ class MenuModeTitleSelectSub {
 
 							// FOLDER HACK: swap on-disk to the new lineup's _root pack
 							// before s_linenp_reboot triggers the menu rebuild. We only
-							// drop the lightweight caches here — _del/_init_game_content_config
-							// re-initialize the emulator and freeze the title-select frame
-							// loop, so we defer those to the post-reboot init() path.
+							// drop the lightweight caches here; refresh_pack_save_context
+							// reloads the region mappings and SRAM after the old menu is
+							// released, without re-initializing the paused emulator.
 							{
 								local new_lineup = (m_current_linenp == LINEUP_JP) ? "jp" : "us";
 								local tag = "FOLDER_" + new_lineup + "__root";
@@ -1603,7 +1620,6 @@ class MenuModeTitleSelectSub {
 								if (tp_path  in ::s_loaded_config) ::s_loaded_config.rawdelete(tp_path);
 								if (tps_path in ::s_loaded_config) ::s_loaded_config.rawdelete(tps_path);
 								if (tmt_path in ::s_loaded_config) ::s_loaded_config.rawdelete(tmt_path);
-								::s_lineup_pack_dirty <- true;
 								// FOLDER HACK: ModeDemo caches m_config at init only, so
 								// without this the demo keeps picking games from the lineup
 								// that was active at boot.
@@ -1611,7 +1627,7 @@ class MenuModeTitleSelectSub {
 									::g_demo_control.reload_config();
 									printf("[FH-LINEUP] g_demo_control.reload_config()\n");
 								}
-								printf("[FH-LINEUP] swap done, marked dirty\n");
+								printf("[FH-LINEUP] swap done, save context refresh pending\n");
 							}
 
 /*

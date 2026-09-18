@@ -72,6 +72,8 @@ static sq_getstring_t     p_sq_getstring     = (sq_getstring_t)    (0x87eb8 | 1)
 
 #if ENABLE_FOLDER_HOOK
 
+#include "save_digest.h"
+
 #define EXECUTE_PREFIX "execute="
 #define EXECUTE_PREFIX_LEN 8
 
@@ -87,6 +89,7 @@ static sq_getstring_t     p_sq_getstring     = (sq_getstring_t)    (0x87eb8 | 1)
  * constants below; surrounding bytes (BACKUP_FLAGS, settings) are untouched. */
 #define LIVE_SAVE_DIR "/usr/game/save"
 #define LIVE_DATA_008 "/usr/game/save/data_008_0000.bin"
+#define LIVE_META_008 "/usr/game/save/meta_008_0000.bin"
 
 /* SRAM array (`_92_sram_datas`) layout inside data_008_0000.bin. Confirmed
  * empirically against a Dracula X save (game_index 2 in JP retail) — the
@@ -617,8 +620,12 @@ static int sram_splice_in(const char *src_sram_path)
     }
 done_in:
     if (!zero_mode && sfd >= 0) close(sfd);
-    fsync(dfd);
+    if (fsync(dfd) != 0) rc = -1;
     close(dfd);
+    if (rc == 0 && save_digest_refresh(LIVE_DATA_008, LIVE_META_008) != 0) {
+        fprintf(stderr, "[m2hook] sram: refresh save digest failed: %s\n", strerror(errno));
+        rc = -1;
+    }
     if (rc == 0) {
         fprintf(stderr, "[m2hook] sram: in <- %s (%s, %lu bytes)\n",
                 zero_mode ? "(zeros)" : src_sram_path,

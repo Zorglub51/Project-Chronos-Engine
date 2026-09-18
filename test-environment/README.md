@@ -49,7 +49,7 @@ sudo apt update
 sudo apt install build-essential gcc-arm-linux-gnueabihf python3 \
   qemu-user-static bubblewrap libegl1-mesa-dev libgles2-mesa-dev libgbm-dev libx11-dev \
   libc6:armhf libstdc++6:armhf libgcc-s1:armhf libopenal1:armhf \
-  libopus0:armhf libbsd0:armhf zlib1g:armhf
+  libopus0:armhf libbsd0:armhf libpulse0:armhf zlib1g:armhf
 ```
 
 Use a VM for this workflow. `start` needs root for the hook's bind mounts, which
@@ -162,6 +162,13 @@ With GNOME/Xwayland, the single logged-in desktop's Xauthority file is discovere
 automatically. Other desktops or multiple logged-in users need explicit
 `DISPLAY` and `XAUTHORITY` environment variables passed to `start`.
 
+Audio uses the desktop's PulseAudio-compatible socket (including PipeWire-Pulse).
+The launcher discovers it from the graphical session or `sudo` user, then sets
+`PULSE_SERVER` and selects OpenAL's `pulse` backend. This is necessary because
+the engine runs as root while the sound server belongs to the desktop user.
+Explicit `PULSE_SERVER` and `ALSOFT_DRIVERS` settings are preserved; `--silent`
+always selects the null driver. The selected backend/server appear in the log.
+
 ## Controls and diagnostics
 
 | Key in the VM window | Console control |
@@ -204,6 +211,8 @@ Interactive checks on the existing Apple Silicon / Parallels VM:
   the game catalogue;
 - restart with existing private test data, without debug mode.
 - local launcher startup with `/media` hidden and all ROMs copied into the VM.
+- audible menu music through the desktop's Pulse-compatible server, with both
+  M2 stereo channels active on the VM's playback device after a normal launch.
 
 The previous adapter retained fake-device descriptor numbers after `close`,
 allowing later file reads to be mistaken for I2C reads. It now clears them.
@@ -215,10 +224,10 @@ can attempt to initialize its `BACK` pseudo-title as a game (`arch=folder`) and
 crash. By default the harness starts from `jp/_root`. `start --resume-pack` keeps
 the previous pack for reproducing this issue; it does not fix the console code.
 
-Audio output, CD-ROM games, USB insertion/removal, real controllers, save-state
-round trips and long sessions are not validated by these checks. `--silent`
-uses OpenAL's null driver; omitting it uses the guest's audio configuration,
-which may require additional desktop-session setup when running as root.
+CD-ROM games, USB insertion/removal, real controllers, save-state round trips
+and long sessions are not validated by these checks. OpenAL output to the
+desktop's stereo device has been checked through the Pulse backend; `--silent`
+uses OpenAL's null driver for tests that should not produce sound.
 
 This tests folder/content behavior, not A33 speed or memory use. QEMU, the VM,
 readback display buffers and the 32 MiB command ring + 4 MiB response area all add
@@ -233,7 +242,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s test-environment -v
 
 They check input preservation, private saves, rejection of existing destinations
 and symlinks, incomplete packs, missing scripts, unsupported binaries and PID
-reuse. These are complementary to the interactive VM checks.
+reuse, desktop audio-server selection and explicit/silent audio overrides.
+These are complementary to the interactive VM checks.
 
 The ARM32 descriptor-reuse regression can also be run inside the VM, without
 starting the engine or graphics proxy:

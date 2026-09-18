@@ -3,7 +3,9 @@ import contextlib
 import hashlib
 import importlib.util
 import io
+import os
 from pathlib import Path
+import socket
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -149,6 +151,62 @@ class PrepareTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Stop this test session"):
                 install_local.install(self.destination.parent)
         self.assertFalse((self.destination.parent / "chronos").exists())
+
+
+class AudioEnvironmentTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+
+    def server(self, uid):
+        path = self.root / str(uid) / "pulse/native"
+        path.parent.mkdir(parents=True)
+        connection = socket.socket(socket.AF_UNIX)
+        self.addCleanup(connection.close)
+        connection.bind(str(path))
+        return "unix:" + str(path)
+
+    def test_root_launch_discovers_single_desktop_server(self):
+        server = self.server(1000)
+        env = {}
+        result = native.audio_environment(env, False, self.root)
+        self.assertEqual(server, result["PULSE_SERVER"])
+        self.assertEqual("pulse", result["ALSOFT_DRIVERS"])
+        self.assertEqual({}, env)
+
+    def test_sudo_user_selects_their_own_server(self):
+        server = self.server(1000)
+        self.server(1001)
+        result = native.audio_environment({"SUDO_UID": "1000"}, False, self.root)
+        self.assertEqual(server, result["PULSE_SERVER"])
+
+    def test_graphical_session_owner_selects_their_server(self):
+        server = self.server(os.getuid())
+        self.server(os.getuid() + 1)
+        auth = self.root / "xauth"
+        auth.touch()
+        result = native.audio_environment({"XAUTHORITY": str(auth)}, False, self.root)
+        self.assertEqual(server, result["PULSE_SERVER"])
+
+    def test_multiple_unidentified_sessions_require_explicit_selection(self):
+        self.server(1000)
+        self.server(1001)
+        with self.assertRaisesRegex(RuntimeError, "set PULSE_SERVER"):
+            native.audio_environment({}, False, self.root)
+
+    def test_explicit_settings_are_preserved(self):
+        env = {"PULSE_SERVER": "unix:/custom/audio", "ALSOFT_DRIVERS": "alsa"}
+        self.assertEqual(env, native.audio_environment(env, False, self.root))
+
+    def test_silent_mode_overrides_driver_without_needing_a_server(self):
+        self.server(1000)
+        self.server(1001)
+        result = native.audio_environment({"ALSOFT_DRIVERS": "pulse"}, True, self.root)
+        self.assertEqual("null", result["ALSOFT_DRIVERS"])
+
+    def test_no_server_leaves_automatic_audio_selection(self):
+        self.assertEqual({}, native.audio_environment({}, False, self.root))
 
 
 if __name__ == "__main__":

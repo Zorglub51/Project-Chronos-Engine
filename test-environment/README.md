@@ -92,7 +92,7 @@ python3 test-environment/parallels.py prepare \
   --support /media/psf/Home/dev/pce/rootfs/usr/game \
   --published /media/psf/Home/dev/pce/publish_out/m2engage
 
-python3 test-environment/parallels.py start --silent
+python3 test-environment/parallels.py start
 python3 test-environment/parallels.py status
 python3 test-environment/parallels.py screenshot
 python3 test-environment/parallels.py stop
@@ -132,7 +132,8 @@ After installation, run these commands in Ubuntu, from any working directory:
 ~/chronos-native/chronos status
 ```
 
-The launcher requests `sudo` when needed and defaults to silent audio. It uses
+The launcher requests `sudo` when needed and uses the guest's audio configuration
+by default. Use `~/chronos-native/chronos start --silent` to mute a test. It uses
 only the VM's local `native.py`, binaries, packs and copied ROMs; the shared Mac
 folder is no longer needed. The original test saves are kept. Local sessions
 also hide `/media` inside their mount namespace to detect accidental reliance
@@ -153,7 +154,7 @@ python3 test-environment/native.py prepare \
   --published /path/to/published-library
 sudo python3 test-environment/native.py start \
   --runtime /home/me/chronos-test/runtime \
-  --build /home/me/chronos-test/build --silent
+  --build /home/me/chronos-test/build
 sudo python3 test-environment/native.py stop --runtime /home/me/chronos-test/runtime
 ```
 

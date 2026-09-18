@@ -281,6 +281,30 @@ and verify that data, metadata outside the digest, and the metadata inode remain
 unchanged. These checks do not establish in-game SRAM or save-state compatibility
 for every title.
 
+### Menu music after folder and lineup changes
+
+Folder entries previously followed the game-launch branch far enough to pause
+the BGM, without resuming it after rebuilding the carousel. Lineup switches also
+paused it, but rebuilt the menu inside its existing loop, bypassing the initial
+JP/US music setup.
+
+The pause now applies only to real game launches. Entering or leaving a folder
+keeps the existing music playing. A shared setup function runs on initial menu
+entry and after a lineup rebuild, selecting `bgm_menu_normal` for JP and
+`bgm_menu_cdrom` for US. It reuses the engine's existing audio archives and adds
+no per-frame work.
+
+For regression checks, start with sound enabled, enter a folder, open/close
+settings, return to the root, switch to US, open/close settings, and switch back
+to JP. Check music after the transition effects have finished, not just the
+navigation sound effects. The VM's playback monitor can verify sustained stereo
+output without recording the microphone.
+
+This sequence passed with the original ARM32 engine and the shipped script.
+Two-second samples after each transition measured roughly 1,380–1,560 RMS on
+both 16-bit channels, including the US and JP returns. Before the fix, the same
+folder entry and subsequent lineup change produced exactly zero PCM output.
+
 ### Remaining limits
 
 The previous adapter retained fake-device descriptor numbers after `close`,

@@ -1,6 +1,7 @@
 """Safety/regression checks with synthetic data; no original assets needed."""
 import contextlib
 import hashlib
+import importlib.util
 import io
 from pathlib import Path
 import tempfile
@@ -9,6 +10,10 @@ import unittest
 from unittest.mock import patch
 
 import native
+
+spec = importlib.util.spec_from_file_location("install_local", Path(__file__).with_name("install-local.py"))
+install_local = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(install_local)
 
 
 class PrepareTests(unittest.TestCase):
@@ -113,6 +118,37 @@ class PrepareTests(unittest.TestCase):
         (self.destination / "session.json").write_text('{"pid": 123, "start_time": "old"}')
         with patch.object(native, "identity", return_value="new"):
             self.assertIsNone(native.active(self.destination))
+
+    def test_local_install_survives_removal_of_original_resources(self):
+        self.destination = self.base / "standalone/runtime"
+        self.args.runtime = self.destination
+        self.prepare()
+        base = self.destination.parent
+        for name in ("gl_proxy", "libMali.so", "m2hook_print.so"):
+            self.put(base / "build" / name, b"local binary")
+        self.put(self.destination / "game/save/private-save.bin", b"keep this save")
+        before = self.snapshot_sources()
+        with contextlib.redirect_stdout(io.StringIO()):
+            install_local.install(base)
+        self.assertEqual(before, self.snapshot_sources())
+        self.assertFalse(any(p.is_symlink() for p in self.destination.rglob("*")))
+        for source in (self.data, self.published):
+            for p in source.rglob("*"):
+                if p.is_file():
+                    p.unlink()
+        self.assertEqual(b"custom ROM", (self.destination / "game/system/roms/custom.pce").read_bytes())
+        self.assertEqual(b"keep this save", (self.destination / "game/save/private-save.bin").read_bytes())
+        self.assertTrue((base / "native.py").is_file())
+        self.assertTrue((base / "chronos").stat().st_mode & 0o111)
+
+    def test_local_install_refuses_an_active_session(self):
+        self.destination = self.base / "standalone/runtime"
+        self.args.runtime = self.destination
+        self.prepare()
+        with patch.object(native, "active", return_value={"pid": 123}):
+            with self.assertRaisesRegex(RuntimeError, "Stop this test session"):
+                install_local.install(self.destination.parent)
+        self.assertFalse((self.destination.parent / "chronos").exists())
 
 
 if __name__ == "__main__":

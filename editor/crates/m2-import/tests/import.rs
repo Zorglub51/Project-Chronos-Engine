@@ -4,7 +4,10 @@ use std::{cell::RefCell, fs};
 
 #[test]
 fn cue_conversion_bios_extraction_and_direct_pcd_copy() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = tempfile::Builder::new()
+        .prefix("Chronos CD é ")
+        .tempdir()
+        .unwrap();
     let root = temp.path();
     let super_path = root.join("super.pce");
     let system_path = root.join("system.pce");

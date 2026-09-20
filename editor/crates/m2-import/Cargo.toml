@@ -1,0 +1,17 @@
+[package]
+name = "m2-import"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+sha2 = "0.10"
+ext4-view = { version = "0.9.3", features = ["std"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+m2-mzs = { path = "../m2-mzs" }
+m2-psb = { path = "../m2-psb" }
+m2-publish = { path = "../m2-publish" }
+pcd-core = { git = "https://github.com/Zorglub51/pce-pcd-rust", rev = "de7f1712f72db5c976a5e4dc3499a566b3d31d32" }

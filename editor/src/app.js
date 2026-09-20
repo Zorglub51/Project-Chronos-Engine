@@ -6,6 +6,7 @@ let dualLibrary = null;   // { jp: {games, path}, us: {games, path}, path }
 let currentLineup = "jp"; // "jp" or "us"
 let selectedIndex = -1;
 let saveTimeout = null; // debounce timer for auto-save
+let saveInFlight = Promise.resolve();
 let coverCache = {};       // "lineup/folder" -> base64 data URL
 let currentFolder = null;  // null or { lineup, name, parentGames }
 let editorSettings = { confirm_delete: true, force_us_titlebar: true, games_path: null };
@@ -107,85 +108,27 @@ function modalSelect(title, options) {
 // ---- Settings ----
 async function loadSettings() {
     try {
-        // TEMP: surface flow in titlebar + console so we can debug what
-        // path the auto-init takes on launch. Remove once verified.
-        const dbg = (m) => { console.log('[init]', m); document.title = 'PCE Editor — ' + m; };
-        dbg('loading settings...');
         editorSettings = await invoke('load_editor_settings');
         document.getElementById('s-confirm-delete').checked = editorSettings.confirm_delete;
         document.getElementById('s-force-us-titlebar').checked = editorSettings.force_us_titlebar;
-        // Auto-discover the library by looking at the editor's own location.
-        // In the deployed workflow the editor binary sits at the USB root,
-        // alongside library/, published/, templates/, BACKUP/. In dev
-        // (`npm run dev`) the exe is in target/debug — fall back to the
-        // saved games_path so the dev loop still works.
-        let root = null;
-        let exeRoot = null;
+        await refreshBiosSettings();
+        let root = editorSettings.games_path;
         try {
-            exeRoot = await invoke('get_editor_root');
-            dbg('exe at ' + exeRoot);
-            const exeStatus = await invoke('check_library_status', { usbRoot: exeRoot });
-            dbg('exe status: lib=' + exeStatus.has_library + ' backup=' + exeStatus.has_backup);
-            if (exeStatus.has_library || exeStatus.has_backup) {
-                root = exeRoot;
-            }
-        } catch (e) {
-            console.warn('get_editor_root failed:', e);
-            modalAlert('get_editor_root failed: ' + e);
-        }
-        if (!root && editorSettings.games_path) {
-            root = editorSettings.games_path;
-            dbg('falling back to saved path ' + root);
-        }
-        if (!root) {
-            dbg('no root, idle (user can Open Library manually)');
-            return;
-        }
-        updateGamesPathDisplay(root);
-        try {
+            const nearby = await invoke('get_editor_root');
+            const status = await invoke('check_library_status', { usbRoot: nearby });
+            if (status.has_library) root = nearby;
+        } catch (e) { console.warn('Library discovery:', e); }
+        if (root) {
             const status = await invoke('check_library_status', { usbRoot: root });
-            dbg('root status: lib=' + status.has_library + ' backup=' + status.has_backup
-                + (status.missing_templates && status.missing_templates.length
-                    ? ' MISSING=' + status.missing_templates.join(',') : ''));
             if (status.has_library) {
-                dbg('loading library');
-                await loadLibrary(root);
-            } else if (status.has_backup
-                && (!status.missing_templates || !status.missing_templates.length)) {
-                dbg('prompting to init');
-                const ok = await modalConfirm(
-                    'No library found on this USB key. Initialize an empty library now?'
-                );
-                if (ok) {
-                    try {
-                        dbg('init_library...');
-                        const initRes = await invoke('init_library', { usbRoot: root });
-                        dbg('publishing...');
-                        await invoke('publish_library', {
-                            gamesPath: initRes.library_root,
-                            stockDataRoot: '',
-                            outputRoot: '',
-                        });
-                        dbg('loading library');
-                        await loadLibrary(root);
-                        onSettingChange('games_path', root);
-                        dbg('ready');
-                    } catch (e) {
-                        modalAlert('Library initialization failed: ' + e);
-                    }
-                }
-            } else {
-                modalAlert('No library and no usable BACKUP/game/ found at ' + root +
-                    (status.missing_templates && status.missing_templates.length
-                        ? '\nMissing: ' + status.missing_templates.join('\n        ') : ''));
+                const recent = document.getElementById('btn-recent-library');
+                recent.style.display = '';
+                recent.title = root;
+                recent.onclick = async () => { await loadLibrary(root); await rememberLibrary(root); };
+                document.getElementById('recent-library-path').textContent = root;
             }
-        } catch (e) {
-            console.warn('Could not auto-load library:', e);
-            modalAlert('Auto-load failed: ' + e);
         }
-    } catch (e) {
-        console.error('Failed to load settings:', e);
-    }
+    } catch (e) { await modalAlert('Could not load editor settings: ' + e); }
 }
 
 async function loadGamesSettings(path) {
@@ -352,13 +295,15 @@ function openSettings() {
     document.getElementById('sorting-panel').style.display = 'none';
     document.getElementById('placeholder').style.display = 'none';
     document.getElementById('settings-panel').style.display = '';
+    document.getElementById('open-prompt').style.display = 'none';
+    refreshBiosSettings();
     selectedIndex = -1;
     document.querySelectorAll('.game-item').forEach(el => el.classList.remove('selected'));
 }
 
 function closeSettings() {
     document.getElementById('settings-panel').style.display = 'none';
-    document.getElementById('placeholder').style.display = '';
+    document.getElementById(dualLibrary ? 'placeholder' : 'open-prompt').style.display = '';
 }
 
 // ---- Sort Editor ----
@@ -645,10 +590,12 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     initCcolorPicker();
     initTitlebarPicker();
+    setupImportUI();
     loadSettings();
 
     // Keyboard navigation: up/down arrows to switch games
     document.addEventListener('keydown', (e) => {
+        if (operationBusy) return;
         if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
         if (document.getElementById('modal-overlay').classList.contains('visible')) return;
         const library = getLibrary();
@@ -1401,6 +1348,7 @@ function setupTauriDragDrop() {
         } else if (event.payload.type === 'drop') {
             coverDrop.classList.remove('dragover');
             folderCoverDrop.classList.remove('dragover');
+            if (operationBusy) return;
             const paths = event.payload.paths;
             if (!paths || paths.length === 0) return;
             // Use first image file from the drop
@@ -1477,42 +1425,198 @@ async function importCover(srcPath) {
     }
 }
 
+// ---- Import operations and first-run assistant ----
+let operationBusy = false;
+
+async function runOperation(title, work) {
+    if (operationBusy) throw new Error('Another import is already running.');
+    operationBusy = true;
+    const overlay = document.getElementById('operation-overlay');
+    const app = document.querySelector('.app');
+    const progress = document.getElementById('operation-progress');
+    document.getElementById('operation-title').textContent = title;
+    document.getElementById('operation-message').textContent = 'Preparing…';
+    progress.removeAttribute('value');
+    overlay.classList.add('visible');
+    app.inert = true;
+    const start = Date.now();
+    const tick = () => { document.getElementById('operation-elapsed').textContent = Math.floor((Date.now() - start) / 1000) + ' s elapsed'; };
+    tick();
+    const timer = setInterval(tick, 1000);
+    const channel = new window.__TAURI__.core.Channel();
+    let active = true;
+    channel.onmessage = update => {
+        if (!active) return;
+        document.getElementById('operation-message').textContent = update.message;
+        if (update.total > 0 && update.completed !== null) {
+            progress.max = update.total;
+            progress.value = update.completed;
+        } else { progress.removeAttribute('value'); }
+    };
+    try { return await work(channel); }
+    finally {
+        active = false;
+        clearInterval(timer);
+        app.inert = false;
+        overlay.classList.remove('visible');
+        operationBusy = false;
+    }
+}
+
+async function refreshBiosSettings() {
+    const bios = editorSettings.bios;
+    document.getElementById('bios-super').value = bios?.super_path || '';
+    document.getElementById('bios-system').value = bios?.system_path || '';
+    document.getElementById('bios-source').textContent = bios ? 'Source: ' + bios.source : '';
+    try {
+        const status = await invoke('get_bios_status', { bios: bios || null });
+        document.getElementById('bios-status').textContent = status.message;
+        document.getElementById('bios-status').classList.toggle('import-error', !status.ready);
+    } catch (e) { document.getElementById('bios-status').textContent = 'Cannot check BIOS: ' + e; }
+}
+
+async function useBios(options) {
+    try {
+        const bios = await runOperation('Prepare CD BIOS', () => invoke('configure_bios', options));
+        const settings = { ...editorSettings, bios };
+        await invoke('save_editor_settings', { settings });
+        editorSettings = settings;
+        await refreshBiosSettings();
+    } catch (e) { await modalAlert('BIOS setup failed: ' + e); }
+}
+
+async function rememberLibrary(root, bios) {
+    const settings = { ...editorSettings, games_path: root };
+    if (bios) settings.bios = bios;
+    await invoke('save_editor_settings', { settings });
+    editorSettings = settings;
+    updateGamesPathDisplay(root);
+    await refreshBiosSettings();
+}
+
+function openNewLibrary() {
+    if (operationBusy) return;
+    document.getElementById('new-error').textContent = '';
+    document.getElementById('new-library-overlay').classList.add('visible');
+}
+
+async function createNewLibrary() {
+    const error = document.getElementById('new-error');
+    error.textContent = '';
+    const sourcePath = document.getElementById('new-source').value;
+    const parent = document.getElementById('new-parent').value;
+    const name = document.getElementById('new-name').value.trim();
+    if (!sourcePath || !parent || !name || name === '.' || name === '..' || /[\\/:\x00-\x1f]/.test(name)) {
+        error.textContent = 'Choose a backup, a destination parent, and a new folder name without slashes.';
+        return;
+    }
+    const destination = parent.replace(/[\\/]$/, '') + '/' + name;
+    const includeGames = document.getElementById('new-contents').value === 'stock';
+    const wizard = document.getElementById('new-library-overlay');
+    document.getElementById('btn-new-create').disabled = true;
+    try {
+        if (dualLibrary) await saveNow();
+        wizard.classList.remove('visible');
+        const result = await runOperation('Create library', onProgress => invoke('create_library_from_dump', {
+            sourcePath, destination, includeGames, onProgress,
+        }));
+        document.getElementById('settings-panel').style.display = 'none';
+        await loadLibrary(result.root);
+        try { await rememberLibrary(result.root, result.bios); }
+        catch (e) { await modalAlert('Library created at ' + result.root + ', but settings could not be saved: ' + e); }
+        const message = result.games ? result.games + ' original games imported and published.' : 'Empty library created. Add your games, then Publish to prepare it for the console.';
+        await modalAlert(message + '\n\n' + result.root + (result.warnings.length ? '\n\n' + result.warnings.join('\n') : ''));
+    } catch (e) {
+        wizard.classList.add('visible');
+        error.textContent = 'Library creation failed: ' + e;
+    } finally { document.getElementById('btn-new-create').disabled = false; }
+}
+
+function setupImportUI() {
+    for (const id of ['btn-new-library', 'btn-settings-new-library']) document.getElementById(id).addEventListener('click', openNewLibrary);
+    document.getElementById('btn-start-settings').addEventListener('click', openSettings);
+    document.getElementById('btn-new-cancel').addEventListener('click', () => document.getElementById('new-library-overlay').classList.remove('visible'));
+    document.getElementById('btn-new-create').addEventListener('click', createNewLibrary);
+    document.getElementById('new-source-type').addEventListener('change', () => { document.getElementById('new-source').value = ''; });
+    for (const [id, input, type] of [['btn-new-source', 'new-source', 'source'], ['btn-new-parent', 'new-parent', 'parent']]) {
+        document.getElementById(id).addEventListener('click', async () => {
+            try {
+                const directory = type === 'parent' || document.getElementById('new-source-type').value !== 'image';
+                const path = await dialogOpen({ directory, title: type === 'parent' ? 'Where to create the library' : 'Select original console backup' });
+                if (path) document.getElementById(input).value = path;
+            } catch (e) { document.getElementById('new-error').textContent = String(e); }
+        });
+    }
+    document.getElementById('btn-bios-extract').addEventListener('click', async () => {
+        try {
+            const pcdPath = await dialogOpen({ title: 'Select an original PC Engine Mini PCD', filters: [{ name: 'PCD', extensions: ['pcd', 'PCD'] }] });
+            if (pcdPath) await useBios({ pcdPath, superPath: null, systemPath: null });
+        } catch (e) { await modalAlert('Cannot select PCD: ' + e); }
+    });
+    for (const kind of ['super', 'system']) {
+        document.getElementById('btn-bios-' + kind).addEventListener('click', async () => {
+            try {
+                const path = await dialogOpen({ title: kind === 'super' ? 'Super System Card BIOS' : 'System Card BIOS', filters: [{ name: 'BIOS', extensions: ['pce', 'bin', 'rom', 'PCE', 'BIN', 'ROM'] }] });
+                if (path) {
+                    document.getElementById('bios-' + kind).value = path;
+                    document.getElementById('bios-status').textContent = 'Click “Use selected BIOS files” to validate and save.';
+                }
+            } catch (e) { await modalAlert('Cannot select BIOS: ' + e); }
+        });
+    }
+    document.getElementById('btn-bios-save').addEventListener('click', () => useBios({ pcdPath: null,
+        superPath: document.getElementById('bios-super').value || null,
+        systemPath: document.getElementById('bios-system').value || null }));
+}
+
 // ---- ROM file import ----
 async function pickRomFile() {
     if (selectedIndex < 0) return;
     try {
         const file = await dialogOpen({
             title: 'Select ROM file',
-            filters: [{ name: 'ROM files', extensions: ['pce', 'PCE', 'pcd', 'PCD', 'bin'] }]
+            filters: [{ name: 'Games (CUE is converted to PCD)', extensions: ['pce', 'PCE', 'sgx', 'SGX', 'pcd', 'PCD', 'cue', 'CUE'] }]
         });
         if (!file) return;
         await importRomFile(file, 'rom.rom', document.getElementById('f-rom'));
     } catch (e) {
-        console.error('ROM pick error:', e);
+        await modalAlert('Cannot select ROM: ' + e);
     }
 }
 
 async function importRomFile(srcPath, dataPath, inputEl) {
+    if (operationBusy) return;
     const library = getLibrary();
-    const entry = library.games[selectedIndex];
-    const filename = srcPath.split('/').pop().split('\\').pop();
+    const entry = library?.games[selectedIndex];
+    if (!entry || entry.is_folder) return;
     const folderPrefix = currentFolder ? currentFolder.name + '/' : '';
     const destDir = dualLibrary.path + '/' + currentLineup + '/' + folderPrefix + entry.folder;
-
+    if (/\.cue$/i.test(srcPath)) {
+        const status = await invoke('get_bios_status', { bios: editorSettings.bios || null });
+        if (!status.ready) {
+            await modalAlert(status.message + '\nOpen Settings → CD conversion to configure the BIOS.');
+            openSettings();
+            return;
+        }
+    }
     try {
-        await invoke('import_file', { srcPath, destDir, filename });
-        // Update the rom field to just the filename
+        const result = await runOperation(/\.cue$/i.test(srcPath) ? 'Convert CD to PCD' : 'Import ROM',
+            onProgress => invoke('import_rom', { srcPath, destDir, bios: editorSettings.bios || null, onProgress }));
         const parts = dataPath.split('.');
         let obj = entry.game;
         for (let i = 0; i < parts.length - 1; i++) obj = obj[parts[i]];
-        obj[parts[parts.length - 1]] = filename;
-        inputEl.value = filename;
-        autoSave();
-        // Refresh ROM datalist
+        obj[parts[parts.length - 1]] = result.filename;
+        inputEl.value = result.filename;
+        // Retain a CD platform already chosen by the user (including Arcade CD).
+        if (result.cd && ![2, 3, 4].includes(entry.game.display.csize)) {
+            entry.game.display.csize = 3;
+            syncArchFromPlatform(entry);
+            setField('f-csize', 3);
+            updateTags(entry);
+        }
+        await saveNow();
         await populateRomDatalist(entry);
-    } catch (e) {
-        modalAlert('Error importing ROM: ' + e);
-    }
+    } catch (e) { await modalAlert('ROM import failed: ' + e); }
 }
 
 async function populateRomDatalist(entry) {
@@ -1523,7 +1627,7 @@ async function populateRomDatalist(entry) {
     try {
         const files = await invoke('list_files_in_folder', {
             folderPath,
-            extensions: ['pce', 'PCE', 'pcd', 'PCD', 'bin']
+            extensions: ['pce', 'PCE', 'sgx', 'SGX', 'pcd', 'PCD']
         });
         for (const f of files) {
             const opt = document.createElement('option');
@@ -1742,24 +1846,35 @@ async function buildMosaicCover() {
 }
 
 // ---- Save States ----
+let saveStatesRequest = 0;
 async function loadSaveStates(entry) {
+    const request = ++saveStatesRequest;
     const grid = document.getElementById('save-states-grid');
+    const status = document.getElementById('sram-status');
     grid.innerHTML = '';
+    status.textContent = 'Reading save data…';
 
     const library = getLibrary();
     const folderPrefix = currentFolder ? currentFolder.name + '/' : '';
     const gamePath = library.path + '/' + folderPrefix + entry.folder;
 
-    let states = [];
+    let saves;
     try {
-        states = await invoke('get_save_states', { gamePath });
+        saves = await invoke('get_save_states', { gamePath });
     } catch (e) {
-        // No save states or error
+        if (request === saveStatesRequest) status.textContent = 'Could not read save data: ' + e;
+        return;
     }
+    // A slower request must not display another game's saves after selection changes.
+    if (request !== saveStatesRequest) return;
+    status.textContent = saves.sram_present
+        ? 'In-game memory (SRAM): file available'
+        : 'In-game memory (SRAM): no file';
 
-    for (const state of states) {
+    for (const state of saves.states) {
         const slotDiv = document.createElement('div');
         slotDiv.className = 'save-state-slot';
+        if (state.preview_error) slotDiv.title = state.preview_error;
 
         if (state.exists && state.thumbnail) {
             const img = document.createElement('img');
@@ -1770,7 +1885,7 @@ async function loadSaveStates(entry) {
         } else {
             const empty = document.createElement('div');
             empty.className = 'save-state-empty';
-            empty.textContent = state.exists ? 'No preview' : 'Empty';
+            empty.textContent = state.exists ? 'Saved · no preview' : 'Empty';
             slotDiv.appendChild(empty);
         }
 
@@ -2201,25 +2316,25 @@ async function deleteGame() {
 // Debounced save: writes to disk after 300ms of inactivity.
 function autoSave() {
     if (saveTimeout) clearTimeout(saveTimeout);
-    saveTimeout = setTimeout(() => saveNow(), 300);
+    saveTimeout = setTimeout(() => {
+        saveTimeout = null;
+        saveNow().catch(() => {}); // saveNow logs failures; Publish reports them.
+    }, 300);
 }
 
-async function saveNow() {
-    if (!dualLibrary) return;
-    try {
-        if (currentFolder) {
-            await invoke('save_folder_contents', {
-                gamesPath: dualLibrary.path,
-                lineup: currentLineup,
-                folderName: currentFolder.name,
-                library: getLibrary()
-            });
-        } else {
-            await invoke('save_library', { gamesPath: dualLibrary.path, library: dualLibrary });
-        }
-    } catch (e) {
-        console.error('Auto-save failed:', e);
-    }
+function saveNow() {
+    if (!dualLibrary) return Promise.resolve();
+    const command = currentFolder ? 'save_folder_contents' : 'save_library';
+    // Snapshot before waiting: selection/edits can change while a save runs.
+    const args = structuredClone(currentFolder ? {
+        gamesPath: dualLibrary.path,
+        lineup: currentLineup,
+        folderName: currentFolder.name,
+        library: getLibrary(),
+    } : { gamesPath: dualLibrary.path, library: dualLibrary });
+    saveInFlight = saveInFlight.catch(() => {}).then(() => invoke(command, args));
+    saveInFlight.catch(e => console.error('Auto-save failed:', e));
+    return saveInFlight;
 }
 
 // ---- Helpers ----
@@ -2231,36 +2346,52 @@ function escHtml(s) {
 
 // ---- Publish ----
 
-// Wraps the m2-publish Rust crate via the publish_library Tauri command.
-// Asks the user where to write the publish output and which stock alldata
-// tree to use as PSB templates.
+// Canonical USB publication also installs Chronos application files.
 async function publishLibrary() {
     if (!dualLibrary || !dualLibrary.path) {
         modalAlert('Open a library folder first');
         return;
     }
-    // Wrapper layout: backend auto-resolves stockRoot to <wrapper>/templates/
-    // and outRoot to <wrapper>/published/ when we pass empty strings.
+    const button = document.getElementById('btn-publish');
+    if (button.disabled) return;
+    button.disabled = true;
+    const originalLabel = button.textContent;
+    button.textContent = 'Publishing…';
+    // Wrapper layout: templates and published output live inside library/.
     // dualLibrary.path is the resolved library root; backend's
     // resolve_library_paths handles both wrapper and legacy layouts.
     try {
+        // Include the last edit even when Publish beats the debounce timer.
+        if (saveTimeout) clearTimeout(saveTimeout);
+        saveTimeout = null;
+        await saveNow();
         const result = await invoke('publish_library', {
             gamesPath: dualLibrary.path,
             stockDataRoot: '',
             outputRoot: '',
         });
+        const usbStatus = result.usb
+            ? (result.usb.missing_original_files.length
+                ? `\n\nChronos files installed. Original console files are still missing:\n` +
+                  result.usb.missing_original_files.join('\n') +
+                  `\nPrepare the original game folder before using this key on the console.`
+                : `\n\nChronos files installed. ROMs are stored once in the published library.\n` +
+                  `The console needs the updated Chronos USB launcher.`)
+            : `\n\nLibrary export only. To prepare the USB application files, use a library/ folder at the root of the key.`;
         modalAlert(
-            `Publish OK\n\n` +
+            `Library published\n\n` +
             `ROMs packed (mzs):  ${result.roms_packed}\n` +
             `ROMs copied:        ${result.roms_copied}\n` +
             `PSB files written:  ${result.psb_files_written}\n` +
             `Folders emitted:    ${result.folders_emitted}\n` +
             `Save files copied:  ${result.save_files_copied}\n` +
             `SRAM blocks embedded: ${result.sram_blocks_embedded}\n\n` +
-            `Output: ${result.output_root}`
+            `Output: ${result.output_root}` + usbStatus
         );
     } catch (e) {
         modalAlert('Publish failed: ' + e);
+    } finally {
+        button.disabled = false;
+        button.textContent = originalLabel;
     }
 }
-

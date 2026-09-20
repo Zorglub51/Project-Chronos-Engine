@@ -11,6 +11,22 @@ GAME_HOME=/usr/game
 EXIT_FILE=/tmp/.game.exit
 LOG_FILE=/tmp/.game.log
 
+trace_launch() {
+	[ -f /run/chronos-debug ] || return 0
+	(
+		. /usr/bin/pce-usb-lib.sh
+		pce_trace_snapshot "$1"
+	) 2>>${LOG_FILE}
+	{
+		echo "[$(date +%H:%M:%S)] TRACE $1 pid=$$"
+		uname -a
+		for f in m2engage lib/m2hook_print.so system/script/mode_title_select.nut.m \
+			040/config/title_prof.psb.m 040/config/title_mode_top.psb.m; do
+			sha256sum "${GAME_HOME}/$f"
+		done
+	} >>${LOG_FILE} 2>&1
+}
+
 StartGame() {
 	rm -rf ${EXIT_FILE}
 	PERSLOG=/rootfs_data/gameapp_session.log
@@ -30,12 +46,14 @@ StartGame() {
 	ulimit -s 1024
 	export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${GAME_HOME}
 	start_ts=$(date +%s)
+	trace_launch before-engine
 	echo "[$(date +%H:%M:%S)] m2engage launching (preload=$preload)" >> ${PERSLOG}
 	cd ${GAME_HOME} && ./${PROC} >> ${LOG_FILE} 2>&1
 	rc=$?
 	end_ts=$(date +%s)
 	runtime=$((end_ts - start_ts))
 	echo "[$(date +%H:%M:%S)] m2engage exited rc=$rc runtime=${runtime}s" | tee -a ${PERSLOG} >> ${LOG_FILE}
+	trace_launch after-engine-exit
 	sync
 
 	# Decide whether to call shutdown-detection.

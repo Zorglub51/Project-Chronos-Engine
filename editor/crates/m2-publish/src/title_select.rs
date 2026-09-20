@@ -1,21 +1,14 @@
-// Generate title_jp_titleselect_<lineup>.psb.m by patching a stock template.
+// Generate title_jp_titleselect_<lineup>.psb.m from the stock motion template.
+// Append each cover, then replace the front and sg image-indexed tracks.
+// sg supplies the SuperGrafx HuCard label during boot_sg and must follow the
+// same indices as front, including the leading BACK card in folders.
 //
-// Strategy: take the stock cover sheet (e.g. 040/motion/title_jp_titleselect_jp.psb.m)
-// as input, KEEP its existing source/textures (tex#000, tex#001 — referenced
-// from motion/sg, motion/soft31..33, the plus layer, thumb), and ADD new
-// textures starting at the next free tex#NNN index for each new cover. Replace
-// `front.layer[0].frameList` AND `sg.layer[0].frameList` with frames pointing to the new textures,
-// then bump `lastTime` / `parameter[0].{division,rangeEnd}` / `priority[1].time`
-// accordingly.
-//
-// `sg` supplies the HuCard label during boot_sg. Its pkg parameter must follow
-// the same image indices as front, including a folder's leading back card.
-//
-// Reasoning: writing the cover sheet from scratch is brittle — the JP cover
-// sheet has motion sections (sg, soft31..33, plus) whose frames reference the
-// stock atlases. Removing or repurposing tex#000 / tex#001 makes m2engage
-// crash with "PLEASE SHUTDOWN 003" (shutdown-detection seeing exit status 1)
-// after `platform check success.`.
+// Keep all stock motions (thumb, plus children, soft31..33) and every sprite
+// they reference. Once the cover tracks are replaced, compact their remaining
+// RGBA8 atlas fragments and discard unreferenced stock textures. Sprite names,
+// origins, attributes and pixels (including filtering borders) are preserved.
+// Removing whole JP atlases without preserving these auxiliary sprites breaks
+// the native engine. Unknown layouts are left unchanged by the compactor.
 
 use crate::library::CoverSize;
 use crate::Error;
@@ -51,9 +44,9 @@ pub struct GenInputs<'a> {
     pub games: &'a [CoverEntry],
     /// Decoded PSB bytes of the stock template. For JP folder packs use
     /// `040/motion/title_jp_titleselect_jp.psb.m`; for US use
-    /// `040/motion/title_jp_titleselect_us.psb.m`. The template's textures and
-    /// other motions are preserved — we append new textures and rebuild the
-    /// image-indexed frames in `front` and `sg` (SuperGrafx launch labels).
+    /// `040/motion/title_jp_titleselect_us.psb.m`. Other motions are preserved.
+    /// Append covers and rebuild `front`/`sg`,
+    /// then compact referenced stock sprites without changing their pixels.
     pub template_psb: &'a [u8],
 }
 
@@ -144,6 +137,8 @@ pub fn generate(inputs: &GenInputs) -> Result<Vec<u8>, Error> {
 
     // Splice into the tree.
     splice_into_tree(&mut tree, new_source_entries, new_frames, last_time)?;
+
+    crate::atlas::compact_stock_atlases(&mut tree, new_tex_start);
 
     Ok(m2_psb::write(&tree, 4)?)
 }

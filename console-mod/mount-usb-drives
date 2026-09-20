@@ -2,18 +2,23 @@
 #
 # /bin/mount-usb-drives — boot-time splash + USB detection + game bind.
 #
-# Called from /etc/inittab as ::sysinit:. Decodes the splash wallpaper to
+# Called by S11chronos-usb after rcS's read-only remount. Decodes the splash to
 # /dev/fb0, then polls `/dev/sd*[1-9]` for 10 seconds. If a USB partition
 # appears with a /game/ tree on it, mount + bind /game over /usr/game
-# before rcS starts the engine. Stock boot if no stick within 10 s.
+# before S99first_startup starts the engine. Stock boot if no stick within 10 s.
 
-USB_MNT=/mnt/usb
-USB_GAME=${USB_MNT}/game
-LIVE_GAME=/usr/game
+. /usr/bin/pce-usb-lib.sh
 LOG=/tmp/mount-usb-drives.log
 SPLASH=/usr/local/wait.gz
 
 log() { echo "[$(date +%H:%M:%S)] $*" >>${LOG}; }
+
+# S10udev's cold-plug event may already have set up the same key.
+# Do not stack a second USB mount or disturb a completed setup.
+if mount | grep -q " $USB_MNT "; then
+    log "USB already prepared by udev"
+    exit 0
+fi
 
 # Splash now (user-visible during the probe window).
 [ -f "$SPLASH" ] && gzip -dc "$SPLASH" > /dev/fb0 2>/dev/null
@@ -44,29 +49,16 @@ if ! mount -t vfat -o rw,sync,uid=0,gid=0,fmask=0022,dmask=0022 "$device" "$USB_
     exit 0
 fi
 
-if [ ! -x "$USB_GAME/m2engage" ]; then
-    log "no $USB_GAME/m2engage — not a library stick"
+if ! pce_check_library; then
+    log "not a published library stick"
     umount "$USB_MNT" 2>/dev/null
     rmdir "$USB_MNT" 2>/dev/null
     exit 0
 fi
 
-# Seed save files from NAND if zero-stubbed (publisher defaults).
-for f in data_008_0000.bin meta_008_0000.bin; do
-    usb_file="$USB_GAME/save/$f"
-    nand_file="/rootfs_data/$f"
-    [ -f "$usb_file" ] || continue
-    [ -f "$nand_file" ] || continue
-    sample=$(head -c 4096 "$usb_file" 2>/dev/null | od -An -tx1 -v | tr -d ' \n0')
-    if [ -z "$sample" ]; then
-        cp "$nand_file" "$usb_file" 2>>${LOG} && sync && log "seeded $f from NAND"
-    fi
-done
-
-if mount --bind "$USB_GAME" "$LIVE_GAME" 2>>${LOG}; then
-    log "bound $USB_GAME -> $LIVE_GAME"
-else
-    log "BIND FAILED"
+if ! pce_apply_bind; then
+    log "USB setup failed, continue stock boot"
+    umount "$USB_MNT" 2>/dev/null
     exit 0
 fi
 

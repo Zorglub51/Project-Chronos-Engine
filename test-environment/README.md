@@ -336,10 +336,36 @@ allowing later file reads to be mistaken for I2C reads. It now clears them.
 Early runs also exhibited a black startup; subsequent successful starts do not
 constitute a long-session reliability test.
 
-**Known native-menu issue:** restarting with `.current` pointing inside a folder
-can attempt to initialize its `BACK` pseudo-title as a game (`arch=folder`) and
-crash. By default the harness starts from `jp/_root`. `start --resume-pack` keeps
-the previous pack for reproducing this issue; it does not fix the console code.
+Restarting directly inside a folder exposed an invalid `arch="folder"` in
+our generated `title_prof.psb.m`. The native engine crashes when initializing
+that machine type, before opening the carousel. The publisher now exports
+navigation entries with native `arch="tg16"`, retaining their pseudo-ROM name,
+regionTag, csize and save slot. A missing ROM is tolerated for this native
+machine; a playable game is not required for menu startup. No additional
+Squirrel guard or dummy-ROM file is needed.
+
+The isolated VM comparison used identical menu scripts and hook: `folder`
+failed at initialization, while `tg16` completed emulator initialization both with the missing
+pseudo-ROM and the original zero-byte `dummy.PCE.m`. This alone did not make
+the two-entry menu visible: it exposed the separate carousel issue below. By default the VM harness
+starts from `jp/_root`, which masks the folder-resume case. Use
+`start --resume-pack` when checking startup in a remembered subfolder.
+
+A second issue affects catalogues with fewer than three entries: stock
+`MenuModeSelectPkg` accesses the third card as the carousel center, even when
+only BACK and one game exist. The small-catalogue patch uses a per-instance
+center index bounded by the card count for layout, selection, fades and launch
+animation. It also bounds a restored cursor, including entry into a BACK-only
+folder. Catalogues with at least three entries retain the stock center.
+The `.nut` patch was tested in the isolated VM with one and two entries,
+including returning to the four-entry root. After user approval it was also
+installed on the A33 console.
+
+With `--debug`, the hook records each bind/unbind result, errno, source/target
+file identity and mount tables around boot and folder changes. Diagnostic
+buffers are temporary, and the engine log remains bounded at 8 MiB. Build the
+console hook with the established Ubuntu 20.04 cross image: recent Ubuntu
+cross-compilers can emit GLIBC_2.34/2.38 dependencies unavailable on the A33.
 
 CD-ROM games, USB insertion/removal, real controllers, save-state round trips
 and long sessions are not validated by these checks. OpenAL output to the

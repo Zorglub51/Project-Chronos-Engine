@@ -1,5 +1,5 @@
 // Publish pipeline. Reads the library, emits the deployable layout under
-// `output/m2engage/`. ROMs are deduplicated by filename across all folders.
+// `output/`. ROMs are deduplicated by filename across all folders.
 //
 // For each lineup we publish:
 //   - one pack for "_root" (the depth-0 menu) including:
@@ -54,6 +54,8 @@ pub struct PublishReport {
     /// `published/m2engage/save/data_008_0000.bin` was (re)built from
     /// library BACKUP_FLAGS + active-pack SRAM.
     pub data_008_emitted: bool,
+    /// Present when publishing to <USB>/library/published/.
+    pub usb: Option<crate::UsbPreparation>,
 }
 
 pub fn publish(opts: &PublishOptions) -> Result<PublishReport, Error> {
@@ -74,6 +76,8 @@ pub fn publish(opts: &PublishOptions) -> Result<PublishReport, Error> {
     // Console reads this on boot; without it, the engine starts with defaults
     // (no per-library prefs / no SRAM for the active pack).
     emit_data_008(&opts.library_root, &m2_root, &mut report)?;
+
+    report.usb = crate::usb::prepare_usb(&opts.output_root)?;
 
     Ok(report)
 }
@@ -182,7 +186,7 @@ fn emit_lineup(
         other => return Err(Error::Library(format!("unknown lineup '{}'", other))),
     };
     // Cover-sheet template: load the matching stock cover sheet for the lineup.
-    // We patch it (add textures + replace front.layer[0].frameList) rather than
+    // We patch it (add covers, replace front/sg tracks, compact old atlases) rather than
     // rebuild from scratch, to preserve sg / soft31..33 / plus / thumb sections
     // that reference the stock atlases.
     let title_select_template_path = match kind {
@@ -229,7 +233,8 @@ fn emit_root_pack(
 
     // Build a synthetic Game list — folder cards become Game-shaped pseudo-entries
     // for downstream PSB generators. ROM packing is unaffected (folder cards have
-    // no ROM); their `arch="folder"` lets the engine + script differentiate.
+    // no ROM). The editor marker `arch="folder"` is exported as native tg16;
+    // menu scripts identify navigation through csize and regionTag.
     let synth_games = synthesize_root_games(entries, lineup_name);
 
     // Per-pack title_prof. Indices in title_prof.game_versions[*][0] are 0..N-1
@@ -296,8 +301,8 @@ fn emit_folder_pack(
 
     // Synthesize a back card at items[0] of every folder pack:
     //   * gives the user a way out (csize=11 -> ::exitGameFolder())
-    //   * makes titleNum >= 3 (back + >=2 games), so the carousel's
-    //     CUNTERINDEX=2 access doesn't go OOB on small folders.
+    //   * leaves even an otherwise empty folder navigable (BACK only); the
+    //     patched carousel bounds its center index for one or two entries.
     let back_png = ensure_back_arrow_png(m2_root)?;
     let games_with_back: Vec<Game> = folder_pack_games(folder, lineup_name, &back_png);
 
@@ -428,7 +433,8 @@ fn back_card_game(lineup_name: &str, back_png: &Path) -> Game {
             arch: "folder".to_string(),
             country: lineup_name.into(),
             preamp: 0.0,
-            // arch="folder" means the engine never opens this as a file.
+            // No file is needed: title_prof exports the folder as tg16,
+            // which stock M2 can initialize with a missing ROM.
             rom: region_tag.clone(),
             region_tag: Some(region_tag.clone()),
             ..Default::default()
@@ -506,8 +512,8 @@ fn folder_to_game(folder: &Folder, lineup_name: &str) -> Game {
             arch: "folder".to_string(),
             country: lineup_name.into(),
             preamp: 0.0,
-            // The "rom" field for a folder card is its tag (engine treats arch="folder"
-            // specially and never opens this as a file).
+            // Keep a non-playable pseudo-ROM name; title_prof exports the
+            // editor's folder marker as native tg16. Navigation uses regionTag.
             rom: region_tag.clone(),
             region_tag: Some(region_tag.clone()),
             ..Default::default()

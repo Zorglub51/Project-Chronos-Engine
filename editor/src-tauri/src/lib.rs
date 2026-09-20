@@ -2,6 +2,8 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use tauri::Manager;
+mod import_commands;
 
 // --- Data structures matching game.json schema ---
 
@@ -761,6 +763,8 @@ pub struct EditorSettings {
     pub force_us_titlebar: bool,
     #[serde(default)]
     pub games_path: Option<String>,
+    #[serde(default)]
+    pub bios: Option<m2_import::BiosConfig>,
 }
 
 fn default_true() -> bool { true }
@@ -771,6 +775,7 @@ impl Default for EditorSettings {
             confirm_delete: true,
             force_us_titlebar: true,
             games_path: None,
+            bios: None,
         }
     }
 }
@@ -802,9 +807,15 @@ impl Default for GamesSettings {
     }
 }
 
-fn editor_settings_path() -> Result<std::path::PathBuf, String> {
+fn portable_settings_path() -> Result<std::path::PathBuf, String> {
     let exe = std::env::current_exe().map_err(|e| format!("Failed to get exe path: {}", e))?;
     let dir = exe.parent().ok_or("Failed to get exe directory")?;
+    Ok(dir.join("settings_editor.json"))
+}
+
+fn editor_settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir.join("settings_editor.json"))
 }
 
@@ -815,13 +826,20 @@ fn legacy_settings_path() -> Result<std::path::PathBuf, String> {
 }
 
 #[tauri::command]
-fn load_editor_settings() -> Result<EditorSettings, String> {
-    let path = editor_settings_path()?;
+fn load_editor_settings(app: tauri::AppHandle) -> Result<EditorSettings, String> {
+    let path = editor_settings_path(&app)?;
     if path.exists() {
         let content = fs::read_to_string(&path)
             .map_err(|e| format!("Failed to read editor settings: {}", e))?;
         return serde_json::from_str(&content)
             .map_err(|e| format!("Failed to parse editor settings: {}", e));
+    }
+    // Migrate previous settings out of the application bundle so upgrades keep them.
+    let portable = portable_settings_path()?;
+    if portable.exists() {
+        let settings: EditorSettings = serde_json::from_slice(&fs::read(portable).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        save_editor_settings(app, settings.clone())?;
+        return Ok(settings);
     }
     // Migrate from old settings.json if it exists
     let legacy = legacy_settings_path()?;
@@ -833,6 +851,7 @@ fn load_editor_settings() -> Result<EditorSettings, String> {
                 confirm_delete: v.get("confirm_delete").and_then(|v| v.as_bool()).unwrap_or(true),
                 force_us_titlebar: v.get("force_us_titlebar").and_then(|v| v.as_bool()).unwrap_or(true),
                 games_path: v.get("games_path").and_then(|v| v.as_str()).map(String::from),
+                bios: None,
             };
             return Ok(settings);
         }
@@ -841,11 +860,12 @@ fn load_editor_settings() -> Result<EditorSettings, String> {
 }
 
 #[tauri::command]
-fn save_editor_settings(settings: EditorSettings) -> Result<(), String> {
-    let path = editor_settings_path()?;
+fn save_editor_settings(app: tauri::AppHandle, settings: EditorSettings) -> Result<(), String> {
+    let path = editor_settings_path(&app)?;
     let json = serde_json::to_string_pretty(&settings)
         .map_err(|e| format!("Failed to serialize editor settings: {}", e))?;
-    fs::write(&path, json)
+    let temporary = path.with_extension("json.tmp");
+    fs::write(&temporary, json).and_then(|()| fs::rename(&temporary, &path))
         .map_err(|e| format!("Failed to write editor settings: {}", e))
 }
 
@@ -871,65 +891,11 @@ fn save_games_settings(games_path: String, settings: GamesSettings) -> Result<()
 }
 
 // ---- Save States ----
-
-#[derive(Debug, Clone, Serialize)]
-pub struct SaveStateInfo {
-    pub slot: u32,
-    pub exists: bool,
-    pub thumbnail: Option<String>, // base64 PNG data URL
-}
+mod save_states;
 
 #[tauri::command]
-fn get_save_states(game_path: String) -> Result<Vec<SaveStateInfo>, String> {
-    let save_dir = std::path::Path::new(&game_path).join("save");
-
-    let mut states = Vec::new();
-    for slot in 0..4u32 {
-        let file_path = save_dir.join(format!("save{}.json", slot + 1));
-        if file_path.exists() {
-            let thumbnail = extract_thumbnail(&file_path).ok();
-            states.push(SaveStateInfo { slot, exists: true, thumbnail });
-        } else {
-            states.push(SaveStateInfo { slot, exists: false, thumbnail: None });
-        }
-    }
-
-    Ok(states)
-}
-
-fn extract_thumbnail(path: &std::path::Path) -> Result<String, String> {
-    let content = fs::read_to_string(path)
-        .map_err(|e| format!("Failed to read: {}", e))?;
-    let json: serde_json::Value = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse: {}", e))?;
-
-    let thumb = &json["root"]["_05_thumbnail"];
-    let width = thumb["_00_width"].as_u64().unwrap_or(0) as u32;
-    let height = thumb["_01_height"].as_u64().unwrap_or(0) as u32;
-    let blob_str = thumb["_02_pixels"]["__blob__"].as_str()
-        .ok_or("No thumbnail blob")?;
-
-    if width == 0 || height == 0 {
-        return Err("Invalid dimensions".into());
-    }
-
-    use base64::Engine;
-    let rgb_data = base64::engine::general_purpose::STANDARD.decode(blob_str)
-        .map_err(|e| format!("Base64 decode failed: {}", e))?;
-
-    if rgb_data.len() != (width * height * 3) as usize {
-        return Err("RGB data size mismatch".into());
-    }
-
-    // Convert RGB to PNG via image crate
-    let img = image::RgbImage::from_raw(width, height, rgb_data)
-        .ok_or("Failed to create image")?;
-    let mut png_buf = std::io::Cursor::new(Vec::new());
-    img.write_to(&mut png_buf, image::ImageFormat::Png)
-        .map_err(|e| format!("PNG encode failed: {}", e))?;
-
-    let png_b64 = base64::engine::general_purpose::STANDARD.encode(png_buf.into_inner());
-    Ok(format!("data:image/png;base64,{}", png_b64))
+fn get_save_states(game_path: String) -> Result<save_states::GameSaves, String> {
+    save_states::read_game_saves(Path::new(&game_path))
 }
 
 // ---- Sync (published -> library) ----
@@ -1024,7 +990,8 @@ const REQUIRED_TEMPLATES: &[&str] = &[
 #[tauri::command]
 fn check_library_status(usb_root: String) -> Result<LibraryStatus, String> {
     let root = Path::new(&usb_root);
-    let has_library = root.join("library").is_dir();
+    let valid = |p: &Path| p.join("jp/gamelist.json").is_file() && p.join("us/gamelist.json").is_file();
+    let has_library = valid(&root.join("library")) || valid(root);
     let backup_game = root.join("BACKUP").join("game");
     let has_backup = backup_game.is_dir();
     let mut missing = Vec::new();
@@ -1117,13 +1084,16 @@ pub struct PublishResult {
     pub sram_blocks_skipped_wrong_size: usize,
     pub data_008_emitted: bool,
     pub output_root: String,
+    pub usb: Option<m2_publish::UsbPreparation>,
 }
 
 /// Publish the library at `games_path` into a deployable m2engage tree.
 ///
 /// In wrapper layout, `games_path` is the wrapper folder and both
 /// `stock_data_root` and `output_root` can be left empty — they auto-resolve
-/// to `<wrapper>/templates/` and `<wrapper>/published/` respectively.
+/// to `<wrapper>/library/templates/` and `<wrapper>/library/published/`.
+/// Canonical USB publication also installs the bundled Chronos scripts/hook
+/// in `<wrapper>/game/` and creates its ROM mount point, without copying ROMs.
 /// Caller may override either by passing a non-empty path.
 #[tauri::command]
 fn publish_library(
@@ -1160,6 +1130,7 @@ fn publish_library(
             sram_blocks_skipped_wrong_size: report.sram_blocks_skipped_wrong_size,
             data_008_emitted: report.data_008_emitted,
             output_root: resolved_output_str,
+            usb: report.usb,
         }),
         Err(e) => Err(format!("publish failed: {}", e)),
     }
@@ -1194,6 +1165,10 @@ pub fn run() {
             check_library_status,
             init_library,
             get_editor_root,
+            import_commands::import_rom,
+            import_commands::configure_bios,
+            import_commands::get_bios_status,
+            import_commands::create_library_from_dump,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

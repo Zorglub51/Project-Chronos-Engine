@@ -5,4 +5,5 @@ members = [
     "crates/m2-mzs",
     "crates/m2-psb",
     "crates/m2-publish",
+    "crates/m2-import",
 ]

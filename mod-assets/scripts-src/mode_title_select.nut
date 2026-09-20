@@ -120,6 +120,7 @@ function refresh_pack_save_context()
         throw "Cannot copy incoming pack SRAM";
     sram.load_from_struct(saved);
     sram.complete(false);
+    ::g_frameCount.setSaveExec(0);
     printf("[FH-SAVE] pack context ready: tag=%s regions=%d\n", tag, ::get_game_region_num());
 }
 
@@ -1232,11 +1233,7 @@ class MenuModeTitleSelectSub {
 							local csize = getLinenpOffsetConfigData(m_current_index, "csize");
 							printf( "m_current_index = %d, csize = %d\n",m_current_index, csize );
 
-							// FOLDER HACK: csize 10 = enter folder, 11 = exit folder.
-							// The native (LD_PRELOAD ::enterGameFolder / ::exitGameFolder)
-							// performs the on-disk swap synchronously and returns. The
-							// rebuild that follows reloads the swapped PSBs (the cache
-							// is bypassed via force_reload in utils.nut).
+                            // Save first, then keep rendering while the IO worker swaps packs.
 							if (csize == 10 || csize == 11) {
 								if (!::g_systemdata.TryAutosave(true)) {
 									wait(0);
@@ -1247,17 +1244,13 @@ class MenuModeTitleSelectSub {
 								// the new pack fades up symmetrically.
 								if (m_selectPkg != null) m_selectPkg.fadeOut();
 
-								// Folder navigation. The LD_PRELOAD-installed natives perform
-								// the on-disk swap synchronously and return. The rebuild that
-								// follows re-reads the swapped PSBs.
-								local tag = getLinenpOffsetConfigData(m_current_index, "regionTag");
-								if (csize == 10) {
-									::enterGameFolder(tag);
-									::s_in_folder = true;
-								} else {
-									::exitGameFolder();
-									::s_in_folder = false;
-								}
+                                local tag = getLinenpOffsetConfigData(m_current_index, "regionTag");
+                                if (csize == 11) {
+                                    local lineup = (m_current_linenp == LINEUP_JP) ? "jp" : "us";
+                                    tag = "FOLDER_" + lineup + "__root";
+                                }
+                                this.wait_folder_swap(tag);
+                                ::s_in_folder = (csize == 10);
 
 								::refresh_pack_save_context();
 
@@ -1283,7 +1276,7 @@ class MenuModeTitleSelectSub {
 
 								m_rsc = Resource();
 								m_rsc.load(motion_path);
-								while (m_rsc.loading) wait(0);
+                                while (m_rsc.loading) { this.animate_folder_wait(); wait(0); }
 
 								// fadeIn=true (default) so folder enter/exit gets the same
 								// fade-up animation as fresh menu construction.
@@ -1591,8 +1584,8 @@ class MenuModeTitleSelectSub {
 							{
 								local new_lineup = (m_current_linenp == LINEUP_JP) ? "jp" : "us";
 								local tag = "FOLDER_" + new_lineup + "__root";
-								printf("[FH-LINEUP] toggle to %s, calling enterGameFolder(%s)\n", new_lineup, tag);
-								::enterGameFolder(tag);
+								printf("[FH-LINEUP] toggle to %s, swapping to %s\n", new_lineup, tag);
+                                this.wait_folder_swap(tag);
 								::s_current_title_prof = null;
 								::s_rsc_title = null;
 								local tp_path  = ::conv_path("config/title_prof.psb");
@@ -1819,6 +1812,38 @@ class MenuModeTitleSelectSub {
 		}
 		
 	}
+
+    // IO-only native worker; all graphics and VM operations stay on this thread.
+    // The emulator is already paused in the title menu. The normal input/demo/
+    // shutdown handlers resume only after refresh_pack_save_context completes.
+    function wait_folder_swap(tag)
+    {
+        ::g_frameCount.setSaveExec(1);
+        if (::beginGameFolderSwap(tag) != "busy")
+            throw "Cannot start folder swap";
+        local frames = 0;
+        local status = "busy";
+        while (status == "busy") {
+            this.animate_folder_wait();
+            wait(0);
+            frames++;
+            status = ::pollGameFolderSwap();
+        }
+        printf("[FH-SWAP] animated wait: %d frames, result=%s\n", frames, status);
+        if (status != "ok") throw "Folder swap failed; save context not activated";
+    }
+
+    function animate_folder_wait()
+    {
+        for (local i = 0; i < NECKUN_NUM; i++) m_pceKun[i].exec();
+        for (local i = 0; i < BGBACK_NUM; i++) {
+            for (local j = 1; j <= 8; j++) {
+                local yure = (::get_yure(::g_bg_count + (j * 20), 50, 4) / 100.0) + 0.5;
+                m_motion_bg_back[i].setVariable("bgillustration0" + j.tostring(), yure);
+            }
+        }
+        ::g_bg_count++;
+    }
 
 	//ソートタイプの変更
 	function setSortType( sortType )
@@ -2171,6 +2196,7 @@ class MenuModeSelectPkg
 	m_count = null;
 	m_move = null;
 	m_index = null;
+	m_center_index = null;
 	m_sort = null;
 
 	m_pkgselect_work = null;
@@ -2201,6 +2227,8 @@ class MenuModeSelectPkg
 		m_motion_bg_down = motion_bg_down;
 		m_config = config;
 		m_index = 0;
+		// Small catalogues have fewer cards than the stock center slot (2).
+		m_center_index = (s_titleNum > CUNTERINDEX) ? CUNTERINDEX : s_titleNum - 1;
 		m_count = 0;
 		m_move = 0;
 		m_isVisible = false;
@@ -2409,7 +2437,7 @@ class MenuModeSelectPkg
     for ( i = 0; i < s_titleNum; i++ )
     {
 			local frameoffset_x = 0;
-			switch( i )
+			switch( i + CUNTERINDEX - m_center_index )
 			{
 			case 0:
 				frameoffset_x = -2 * getFrameOffset( );
@@ -2427,18 +2455,18 @@ class MenuModeSelectPkg
 				break;
 			}
 
-			m_pkgselect_motion[i].left = 0 + ( i * PKG_W ) + offset_x - ( PKG_W * CUNTERINDEX ) + frameoffset_x;	//0,0が画面中央
+			m_pkgselect_motion[i].left = 0 + ( i * PKG_W ) + offset_x - ( PKG_W * m_center_index ) + frameoffset_x;	//0,0が画面中央
 			m_pkgselect_motion[i].top = PKG_Y;
 
 			if( m_isExec == true ) //ゲーム起動演出
 			{
 				//起動するパッケージを透明にする
-				m_pkgselect_motion[i].opacity = m_pkgselect_motion[CUNTERINDEX].opacity - 8;
+				m_pkgselect_motion[i].opacity = m_pkgselect_motion[m_center_index].opacity - 8;
 				if( m_pkgselect_motion[i].opacity < 0 )
 				{
 					m_pkgselect_motion[i].opacity = 0;
 				}
-				m_pkgselect_s_motion[i].opacity = m_pkgselect_motion[CUNTERINDEX].opacity - 8;
+				m_pkgselect_s_motion[i].opacity = m_pkgselect_motion[m_center_index].opacity - 8;
 				if( m_pkgselect_s_motion[i].opacity < 0 )
 				{
 					m_pkgselect_s_motion[i].opacity = 0;
@@ -2447,7 +2475,7 @@ class MenuModeSelectPkg
 			else
 			{
 				//透明から表示する
-				m_pkgselect_motion[i].opacity = m_pkgselect_motion[CUNTERINDEX].opacity + 8;
+				m_pkgselect_motion[i].opacity = m_pkgselect_motion[m_center_index].opacity + 8;
 				if( m_pkgselect_motion[i].opacity > 255 )
 				{
 					m_pkgselect_motion[i].opacity = 255;
@@ -2569,18 +2597,18 @@ class MenuModeSelectPkg
 	function setIndex( idx )
 	{
 
-		m_index = idx;
+		m_index = (idx >= 0 && idx < s_titleNum) ? idx : 0;
 		
     local i = 0;
     for ( i = 0; i < s_titleNum; i++ )
     {
 			m_pkgselect_work[i] = i;
 		}
-		for ( i = 0; i < CUNTERINDEX; i++ )
+		for ( i = 0; i < m_center_index; i++ )
 		{
 			move_r( )
 		}
-		for ( i = 0; i < idx; i++ )
+		for ( i = 0; i < m_index; i++ )
 		{
 			move_l( )
 		}
@@ -2658,7 +2686,7 @@ class MenuModeSelectPkg
 	{
 
 		//タイトル設定
-		local selectindex = m_pkgselect_work[CUNTERINDEX];
+		local selectindex = m_pkgselect_work[m_center_index];
 		local indexoffset = getLanguageIndexOffset( );	//起動するリージョンによってオフセットを加える
 		local sortindex = s_indextable[selectindex] + indexoffset;
 		local tname = m_config["items"][sortindex]["tname"];
@@ -2824,7 +2852,7 @@ class MenuModeSelectPkg
 		//カーソルを消す
 		setCursolVisible( false );
 
-		local selectindex = m_pkgselect_work[CUNTERINDEX];
+		local selectindex = m_pkgselect_work[m_center_index];
 		local image = getLinenpOffsetConfigData( selectindex, "image" );
 		local csize = getLinenpOffsetConfigData( selectindex, "csize" );
 		m_exec_motion = Motion(m_layer);
@@ -2872,7 +2900,7 @@ class MenuModeSelectPkg
 
 		if(selectindex < LINEUPMAX)
 		{
-			m_pkgselect_motion[CUNTERINDEX].setVariable("pkg", image);
+			m_pkgselect_motion[m_center_index].setVariable("pkg", image);
 			m_motion_bg.setVariable("pkg", image);
 			m_motion_bg_down.setVariable("pkg", image);
 			m_exec_motion.setVariable("pkg", image);

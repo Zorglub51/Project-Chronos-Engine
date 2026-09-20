@@ -1,0 +1,35 @@
+{
+  "architecture": "ARMv7 hard-float, static musl",
+  "sources": {
+    "musl-1.2.6.tar.gz": {
+      "sha256": "d585fd3b613c66151fc3249e8ed44f77020cb5e6c1e635a616d3f9f82460512a",
+      "url": "https://www.musl-libc.org/releases/musl-1.2.6.tar.gz"
+    },
+    "dropbear-2026.94.tar.bz2": {
+      "sha256": "e098034a843699200c8c977a991fff73159735bf795d5f72ef672c41a6b1ae81",
+      "url": "https://dropbear.nl/mirror/releases/dropbear-2026.94.tar.bz2"
+    },
+    "openssh-10.5p1.tar.gz": {
+      "sha256": "d44d28a839ea9daf969cc69150fde59910b2b39361dad81a3bd6cbd19218db11",
+      "url": "https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-10.5p1.tar.gz"
+    }
+  },
+  "files": [
+    {
+      "name": "dropbear",
+      "size": 194352,
+      "sha256": "1b0dac8adb9f43005fa5da255a0b47d3b3ec26bcaa414967951d690b6bf8e74d"
+    },
+    {
+      "name": "dropbearkey",
+      "size": 54560,
+      "sha256": "a612aad3ea4ea9084c32aca9c2380be2053df8fd7b54170d1f0e39eeb7d153cb"
+    },
+    {
+      "name": "sftp-server",
+      "size": 87256,
+      "sha256": "d5a7d966b7f145a2b3c8b3b5746b243d8b50551f4400a25811968aafda28a892"
+    }
+  ],
+  "dropbear_localoptions": "/* Chronos A33: SSH shell + SFTP, no persistent auxiliary services. */\n#define DROPBEAR_SVR_AGENTFWD 0\n#define DROPBEAR_X11FWD 0\n#define DROPBEAR_SVR_LOCALTCPFWD 0\n#define DROPBEAR_SVR_REMOTETCPFWD 0\n#define DROPBEAR_SFTPSERVER 1\n#define SFTPSERVER_PATH \"/usr/libexec/sftp-server\"\n#define DROPBEAR_RSA 0\n#define DROPBEAR_ECDSA 0\n#define DROPBEAR_ED25519 1\n#define DROPBEAR_DH_GROUP14_SHA256 0\n#define DROPBEAR_DH_GROUP16 0\n#define DROPBEAR_ECDH 0\n#define DROPBEAR_CURVE25519 1\n"
+}

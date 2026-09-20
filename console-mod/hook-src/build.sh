@@ -23,7 +23,7 @@ docker run --rm \
             -shared -fPIC -Wall -Wextra -O2 -g \
             -mcpu=cortex-a7 -mfpu=neon-vfpv4 -mfloat-abi=hard \
             -o m2hook_print.so /src/m2hook_print.c \
-            -ldl -Wl,--no-as-needed
+            -ldl -lrt -pthread -Wl,--no-as-needed
     '
 
 echo "=== Build complete ==="

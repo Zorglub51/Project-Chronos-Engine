@@ -25,7 +25,7 @@
                 <button id="btn-add" title="Add new game">+ Add Game</button>
                 <button id="btn-add-folder" title="Add sub-folder">+ Folder</button>
                 <button id="btn-sorting" title="Edit sort orders">Sorting</button>
-                <button id="btn-publish" title="Publish library to a deployable m2engage tree">Publish…</button>
+                <button id="btn-publish" title="Publish the library and update Chronos files on the USB key">Publish…</button>
             </div>
             <div class="folder-breadcrumb" id="folder-breadcrumb" style="display:none">
                 <button class="breadcrumb-back" id="breadcrumb-back">&larr; Back</button>
@@ -39,8 +39,13 @@
         <div class="main" id="main-content">
             <!-- Open folder prompt (shown initially) -->
             <div class="open-prompt" id="open-prompt">
-                <p>Open a games folder to get started</p>
-                <button class="btn-primary" id="btn-open-folder">Open Games Folder</button>
+                <h1>PCE Game Editor</h1>
+                <p>Build your PC Engine Mini library</p>
+                <button class="btn-primary" id="btn-new-library">New library from a console dump…</button>
+                <button id="btn-open-folder">Open an existing library…</button>
+                <button id="btn-recent-library" style="display:none">Continue with the last library</button>
+                <small id="recent-library-path"></small>
+                <button id="btn-start-settings">Settings / CD BIOS</button>
             </div>
 
             <!-- Placeholder (shown when no game selected) -->
@@ -62,6 +67,7 @@
                             <div class="setting-path-row">
                                 <span class="setting-path" id="s-games-path">Not set</span>
                                 <button class="btn-small" id="btn-change-folder">Change</button>
+                                <button class="btn-small" id="btn-settings-new-library">New library…</button>
                             </div>
                         </div>
                         <div class="setting-row">
@@ -72,6 +78,19 @@
                             <label class="setting-label" for="s-force-us-titlebar">Force US lineup titlebars (TG16 for HuCard, TG16-CD for CD-ROM)</label>
                             <input type="checkbox" id="s-force-us-titlebar" class="setting-toggle" checked>
                         </div>
+                    </div>
+                </div>
+                <div class="section open">
+                    <div class="section-title">CD conversion</div>
+                    <div class="section-body">
+                        <p class="setting-hint">Select a CUE when importing a CD. All referenced tracks will be converted into one PCD. Existing PCD files are copied directly and need no separate BIOS.</p>
+                        <p class="setting-hint">Extract both BIOS images from an original PC Engine Mini PCD, or select your existing 256 KiB BIOS files. They are copied into the editor’s settings folder.</p>
+                        <button class="btn-small" id="btn-bios-extract">Extract BIOS from an original PCD…</button>
+                        <div class="field-row"><label class="field-label">Super System Card</label><div class="field-value setting-path-row"><input id="bios-super" readonly><button class="btn-small" id="btn-bios-super">Choose…</button></div></div>
+                        <div class="field-row"><label class="field-label">System Card</label><div class="field-value setting-path-row"><input id="bios-system" readonly><button class="btn-small" id="btn-bios-system">Choose…</button></div></div>
+                        <button class="btn-small" id="btn-bios-save">Use selected BIOS files</button>
+                        <p id="bios-status" class="setting-hint" role="status"></p>
+                        <p id="bios-source" class="setting-hint"></p>
                     </div>
                 </div>
                 <div class="section open">
@@ -313,8 +332,9 @@
 
                 <!-- Save States section -->
                 <div class="section open" data-section="savestates">
-                    <div class="section-title">Save States</div>
+                    <div class="section-title">Save Data</div>
                     <div class="section-body">
+                        <div class="save-data-status" id="sram-status" role="status"></div>
                         <div class="save-states-grid" id="save-states-grid">
                         </div>
                     </div>
@@ -352,6 +372,32 @@
         </div>
     </div>
 
+    <div class="modal-overlay" id="new-library-overlay">
+        <div class="modal wizard" role="dialog" aria-modal="true" aria-labelledby="new-library-title">
+            <h2 id="new-library-title">New library</h2>
+            <p>Use your console’s original backup to recover menu resources and CD BIOS.</p>
+            <label for="new-source-type">Backup format</label>
+            <select id="new-source-type"><option value="image">Single dump file (full NAND or P9 image)</option><option value="partitions">Folder of separate partitions</option><option value="folder">Extracted P9 / game folder</option></select>
+            <div class="setting-path-row"><input id="new-source" readonly placeholder="Select your backup"><button id="btn-new-source">Choose…</button></div>
+            <label>Destination parent folder</label>
+            <div class="setting-path-row"><input id="new-parent" readonly placeholder="Select where to create the library"><button id="btn-new-parent">Choose…</button></div>
+            <label for="new-name">New folder name</label><input id="new-name" value="Chronos">
+            <label for="new-contents">Initial contents</label>
+            <select id="new-contents"><option value="stock">Include the original games and covers</option><option value="empty">Empty library — add my own games</option></select>
+            <p class="setting-hint">Creates game/ and library/ inside the new folder. Copy those two folders to the USB root when ready. Your backup stays unchanged. A full dump and separate partitions are read directly; no Linux VM is needed.</p>
+            <p id="new-error" class="import-error" role="alert"></p>
+            <div class="modal-actions"><button id="btn-new-cancel">Cancel</button><button class="btn-primary" id="btn-new-create">Create library</button></div>
+        </div>
+    </div>
+    <div class="modal-overlay" id="operation-overlay">
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="operation-title">
+            <h2 id="operation-title"></h2>
+            <p id="operation-message" role="status" aria-live="polite"></p>
+            <progress id="operation-progress"></progress>
+            <p id="operation-elapsed" class="setting-hint"></p>
+            <p class="setting-hint">Keep the editor open until this operation completes.</p>
+        </div>
+    </div>
     <script type="module" src="app.js"></script>
 </body>
 </html>

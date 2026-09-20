@@ -19,40 +19,40 @@
 //       cover.png                           ← folder's icon (shown as a card in parent menu)
 //       <gameDirName>/...                   ← games inside the folder (same per-game shape)
 //
-// Published layout:
+// Canonical USB layout:
+//   game/                         original native engine + extracted resources
+//     system/script/*.nut.m       bundled Chronos scripts, refreshed on publish
+//     system/roms/                mount point for library/published/roms
+//     lib/m2hook_print.so          bundled hook
+//     save/                       existing live saves (never modified here)
+//   library/
+//     jp/, us/, templates/        editable library and stock templates
+//     published/
+//       roms/                     shared published ROM set (no copies in game/)
+//       save/data_008_0000.bin     published settings/SRAM
+//       folders/<lineup>/
+//         _root/ or <folder>/
+//           title_prof.psb.m
+//           title_mode_top.psb.m
+//           title_jp_titleselect_<lineup>.psb.m
+//           saves/                engine-format states and per-pack sram.bin
 //
-//   published/
-//     game/                                 ← bind-mounted over /usr/game/ at boot
-//       system/                             ← scripts, system PSBs, fonts, motions, sounds
-//         roms/
-//           <rom>.pce.m  (HuCard, MZS-packed)
-//           <rom>.pcd    (CD, raw)
-//       040/                                ← active-pack overlay target
-//       lib/m2hook_print.so
-//       save/
-//         data_008_0000.bin                 ← BACKUP_FLAGS + active-pack SRAM (engine read/write)
-//         data_011_*.bin / data_012_*.bin   ← active-pack state files
-//     folders/<lineup>/                     ← bind-mounted over /UDISK/folders/
-//       _root/                              ← depth-0 menu (real games + folder cards)
-//         title_prof.psb.m
-//         title_mode_top.psb.m
-//         title_jp_titleselect_<lineup>.psb.m
-//         saves/
-//           data_011_*.bin / data_012_*.bin + meta (engine-format, slot = game_index*4+N+lineup_offset)
-//           sram.bin                        ← 150 × 8448-byte blocks (per-pack concatenation)
-//       <FOLDER<id>>/                       ← one pack per subfolder, same shape
+// Other output paths remain standalone exports (roms/, folders/, save/).
 
 mod library;
 mod publish_pipeline;
 mod sync;
 mod templates;
+mod atlas;
 mod title_mode_top;
 mod title_prof;
 mod title_select;
+mod usb;
 
 pub use library::{CoverSize, Folder, Game, GameRom, Library, Lineup, LineupEntry};
 pub use publish_pipeline::{publish, PublishOptions, PublishReport};
 pub use sync::{sync_library_from_published, SyncOptions, SyncReport};
+pub use usb::UsbPreparation;
 
 use thiserror::Error;
 

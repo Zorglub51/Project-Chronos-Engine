@@ -47,7 +47,11 @@ fn build_version_map(games: &[Game]) -> IndexMap<String, Value> {
 
 fn build_rom_entry(rom: &GameRom) -> Value {
     let mut obj = IndexMap::new();
-    obj.insert("arch".into(), Value::String(rom.arch.clone()));
+    // `folder` is an editor marker, not a machine supported by native M2.
+    // The stock engine tolerates a missing ROM with tg16, including at boot.
+    // Keep the pseudo-ROM/tag and slot: navigation uses csize + regionTag.
+    let arch = if rom.arch == "folder" { "tg16" } else { &rom.arch };
+    obj.insert("arch".into(), Value::String(arch.into()));
     obj.insert("country".into(), Value::String(rom.country.clone()));
     obj.insert("preamp".into(), Value::Float(rom.preamp));
     obj.insert("rom".into(), Value::String(format!("roms/{}", basename(&rom.rom))));
@@ -110,4 +114,66 @@ fn set_path(tree: &mut Value, path: &[&str], new_value: Value) -> Result<(), Err
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::library::GameJson;
+
+    fn game(tag: &str, arch: &str) -> Game {
+        Game {
+            dir_name: tag.into(), region_tag: tag.into(),
+            data: GameJson { rom: GameRom { arch: arch.into(), rom: format!("{tag}.pce.m"),
+                                         ..Default::default() }, ..Default::default() },
+            sort: Default::default(), source_dir: Default::default(),
+        }
+    }
+
+    fn member<'a>(value: &'a Value, key: &str) -> &'a Value {
+        match value { Value::Object(map) => &map[key], _ => panic!("expected object") }
+    }
+
+    fn generated(games: &[Game]) -> Value {
+        let tree = Value::Object(IndexMap::from([("root".into(), Value::Object(IndexMap::from([
+            ("m2epi".into(), Value::Object(IndexMap::new())),
+            ("controller".into(), Value::String("keep-stock-controller".into())),
+        ])))]));
+        let template = m2_psb::write(&tree, 4).unwrap();
+        m2_psb::read(&generate(&GenInputs { template_psb: &template, games }).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn folder_uses_native_machine_without_moving_back_or_save_slots() {
+        let games = [game("FOLDER_jp_BACK", "folder"), game("GAME053", "tg16"), game("GAME007", "tg16")];
+        let output = generated(&games);
+        let root = member(&output, "root");
+        let machines = member(member(root, "m2epi"), "version");
+        assert!(matches!(member(member(machines, "FOLDER_jp_BACK"), "arch"), Value::String(s) if s == "tg16"));
+        assert!(matches!(member(member(machines, "FOLDER_jp_BACK"), "rom"), Value::String(s) if s == "roms/FOLDER_jp_BACK.pce"));
+        let versions = member(root, "game_versions");
+        for (tag, slot) in [("FOLDER_jp_BACK", 0), ("GAME053", 1), ("GAME007", 2)] {
+            assert!(matches!(member(versions, tag), Value::Array(v) if matches!(v.first(), Some(Value::Int(n)) if *n == slot)));
+        }
+        assert!(matches!(member(root, "controller"), Value::String(s) if s == "keep-stock-controller"));
+    }
+
+    #[test]
+    fn folder_only_pack_is_native_compatible_and_real_cd_settings_are_preserved() {
+        let mut folder = game("FOLDER_us_TEST", "folder");
+        folder.data.rom.rom = "FOLDER_us_TEST".into();
+        let output = generated(&[folder]);
+        let versions = member(member(member(&output, "root"), "m2epi"), "version");
+        assert!(matches!(member(member(versions, "FOLDER_us_TEST"), "arch"), Value::String(s) if s == "tg16"));
+        assert!(matches!(member(member(versions, "FOLDER_us_TEST"), "rom"), Value::String(s) if s == "roms/FOLDER_us_TEST"));
+        let mut cd = game("GAME002", "tg16cd");
+        cd.data.rom.tg16cd_systemcard = Some("syscard.pce".into());
+        cd.data.rom.tg16_option = Some(2);
+        let output = generated(&[cd]);
+        let versions = member(member(member(&output, "root"), "m2epi"), "version");
+        let entry = member(versions, "GAME002");
+        assert!(matches!(member(entry, "arch"), Value::String(s) if s == "tg16cd"));
+        assert!(matches!(member(entry, "tg16cd_systemcard"), Value::String(s) if s == "syscard.pce"));
+        assert!(matches!(member(entry, "tg16_option"), Value::Int(2)));
+    }
 }

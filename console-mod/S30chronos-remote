@@ -1,0 +1,34 @@
+#!/bin/sh
+# Run after S20urandom; keep gadget waits/key generation out of the game boot.
+. /usr/bin/pce-remote-lib.sh
+SETUP_PID=/run/chronos-remote-setup.pid
+LOCK=/run/chronos-remote-starting
+LOG=/tmp/chronos-remote.log
+
+case "$1" in
+    start)
+        if [ -s "$REMOTE_PID" ] && kill -0 "$(cat "$REMOTE_PID")" 2>/dev/null; then
+            exit 0
+        fi
+        mkdir "$LOCK" 2>/dev/null || exit 0
+        "$0" configure </dev/null >>"$LOG" 2>&1 &
+        ;;
+    configure)
+        echo "$$" > "$SETUP_PID"
+        trap 'rm -f "$SETUP_PID"; rmdir "$LOCK" 2>/dev/null' EXIT
+        trap 'exit 1' HUP INT TERM
+        remote_start
+        ;;
+    stop)
+        if [ -s "$SETUP_PID" ]; then
+            kill "$(cat "$SETUP_PID")" 2>/dev/null
+        fi
+        start-stop-daemon -K -q -p "$REMOTE_PID" -x "$DROPBEAR" 2>/dev/null
+        rm -f "$REMOTE_PID"
+        ;;
+    restart)
+        "$0" stop
+        "$0" start
+        ;;
+    *) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

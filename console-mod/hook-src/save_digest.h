@@ -51,11 +51,11 @@ static int save_digest_offset(const uint8_t *buf, size_t size, size_t *offset)
     return 0;
 }
 
-static int save_digest_refresh(const char *data_path, const char *meta_path)
+static int save_digest_process(const char *data_path, const char *meta_path, int update)
 {
-    uint8_t buf[4096], digest[MD5_DIGEST_SIZE];
+    uint8_t buf[4096], digest[MD5_DIGEST_SIZE], previous[MD5_DIGEST_SIZE];
     struct stat st;
-    int meta = open(meta_path, O_RDWR);
+    int meta = open(meta_path, update ? O_RDWR : O_RDONLY);
     if (meta < 0) return -1;
     int data = -1, result = -1;
     size_t offset;
@@ -72,6 +72,7 @@ static int save_digest_refresh(const char *data_path, const char *meta_path)
         got += (size_t)n;
     }
     if (save_digest_offset(buf, got, &offset)) { errno = EINVAL; goto done; }
+    memcpy(previous, buf + offset, sizeof(previous));
     data = open(data_path, O_RDONLY);
     if (data < 0) goto done;
     struct md5_state hash;
@@ -84,13 +85,15 @@ static int save_digest_refresh(const char *data_path, const char *meta_path)
         md5_update(&hash, buf, (unsigned)n);
     }
     md5_final(&hash, digest);
+    if (!memcmp(previous, digest, sizeof(digest))) { result = 1; goto done; }
+    if (!update) { result = 0; goto done; }
     for (got = 0; got < sizeof(digest);) {
         ssize_t n = pwrite(meta, digest+got, sizeof(digest)-got, (off_t)(offset+got));
         if (n < 0 && errno == EINTR) continue;
         if (n <= 0) { if (!n) errno = EIO; goto done; }
         got += (size_t)n;
     }
-    result = fsync(meta);
+    result = fsync(meta) == 0 ? 1 : -1;
 done:
     {
         int saved_errno = errno;
@@ -99,5 +102,10 @@ done:
         errno = saved_errno;
     }
     return result;
+}
+
+static int save_digest_refresh(const char *data_path, const char *meta_path)
+{
+    return save_digest_process(data_path, meta_path, 1) < 0 ? -1 : 0;
 }
 #endif

@@ -92,7 +92,7 @@ pub fn sync_library_from_published(opts: &SyncOptions) -> Result<SyncReport, Err
             sync_pack(
                 &folder.dir_name,
                 Some(folder),
-                &folder.games.iter().collect::<Vec<_>>(),
+                &folder.games.iter().map(Some).collect::<Vec<_>>(),
                 lineup_name,
                 lineup,
                 &active_pack,
@@ -109,8 +109,13 @@ pub fn sync_library_from_published(opts: &SyncOptions) -> Result<SyncReport, Err
 /// Capture published `data_008_0000.bin` BACKUP_FLAGS bytes into the
 /// library. The library file ends up containing exactly the first 0x5E80
 /// bytes (no SRAM trailer — that's per-game).
+fn live_data_008(published_root: &Path) -> PathBuf {
+    let canonical = published_root.join("save/data_008_0000.bin");
+    if canonical.is_file() { canonical } else { published_root.join("game/save/data_008_0000.bin") }
+}
+
 fn sync_backup_flags(library_root: &Path, published_root: &Path, report: &mut SyncReport) -> Result<(), Error> {
-    let src = published_root.join("game/save/data_008_0000.bin");
+    let src = live_data_008(published_root);
     if !src.exists() { return Ok(()); }
     let bytes = fs::read(&src)?;
     if bytes.len() < BACKUP_FLAGS_SIZE { return Ok(()); }
@@ -129,11 +134,9 @@ fn read_current(published_root: &Path) -> Option<(String, String)> {
     Some((lineup.to_string(), dir.to_string()))
 }
 
-/// Returns the root-pack's ordered games (excludes folder cards — those
-/// have no SRAM/state). Folder cards just take up a position; sync skips
-/// them by `arch=="folder"`.
-fn lineup_root_games(lineup: &Lineup) -> Vec<&Game> {
-    lineup.root_entries.iter().filter_map(|e| match e {
+/// Keep folder positions: native save indices include their menu cards.
+fn lineup_root_games(lineup: &Lineup) -> Vec<Option<&Game>> {
+    lineup.root_entries.iter().map(|e| match e {
         LineupEntry::Game(g) => Some(g),
         LineupEntry::Folder(_) => None,
     }).collect()
@@ -145,7 +148,7 @@ fn lineup_root_games(lineup: &Lineup) -> Vec<&Game> {
 fn sync_pack(
     pack_dir_name: &str,
     folder: Option<&Folder>,
-    pack_games: &[&Game],
+    pack_games: &[Option<&Game>],
     lineup_name: &str,
     lineup: &Lineup,
     active_pack: &Option<(String, String)>,
@@ -155,13 +158,12 @@ fn sync_pack(
 ) -> Result<(), Error> {
     let pack_dir = published_root.join("folders").join(lineup_name).join(pack_dir_name);
     let saves_dir = pack_dir.join("saves");
-    if !saves_dir.exists() { return Ok(()); }
 
     // SRAM source: for active pack, slice out of live data_008; otherwise
     // read the pack's saves/sram.bin (written by hook on last swap-out).
     let is_active = active_pack.as_ref().map_or(false, |(l, d)| l == lineup_name && d == pack_dir_name);
     let sram_blob: Option<Vec<u8>> = if is_active {
-        let data_008 = published_root.join("game/save/data_008_0000.bin");
+        let data_008 = live_data_008(published_root);
         if data_008.exists() {
             let bytes = fs::read(&data_008)?;
             if bytes.len() >= SRAM_OFFSET + SRAM_SLICE_SIZE {
@@ -192,18 +194,27 @@ fn sync_pack(
                 report.sram_blocks_unmapped += 1;
                 continue;
             }
-            let game = pack_games[game_idx];
+            let Some(game) = pack_games[game_idx] else { continue };
             let dst = library_game_sram_path(library_root, lineup_name, folder, game);
             fs::write(&dst, block)?;
             report.sram_blocks_imported += 1;
         }
     }
 
-    // State files: walk pack/saves/*.bin and route to per-game library/<gameDir>/saves/.
+    // New states remain in the live save directory until the hook migrates
+    // them on a pack change. Prefer those files only for the active pack.
+    // Zero-byte live files are bind-mount placeholders, not newer saves.
     let lineup_offset = if lineup_name == "us" { LINEUP_SLOT_OFFSET_US } else { 0 } as usize;
-    for entry in fs::read_dir(&saves_dir)? {
+    let mut sources = vec![saves_dir.clone()];
+    if is_active {
+        sources.push(live_data_008(published_root).parent().unwrap().to_path_buf());
+    }
+    let mut states = std::collections::BTreeMap::new();
+    for source in sources {
+      if !source.is_dir() { continue; }
+      for entry in fs::read_dir(&source)? {
         let entry = entry?;
-        if !entry.file_type()?.is_file() { continue; }
+        if !entry.file_type()?.is_file() || entry.metadata()?.len() == 0 { continue; }
         let name = entry.file_name();
         let name_str = match name.to_str() { Some(s) => s, None => continue };
 
@@ -212,23 +223,30 @@ fn sync_pack(
             Some(x) => x,
             None => continue,
         };
-        let _ = seg_type; // for now we don't preserve type in library naming
-
-        let local_slot = slot.saturating_sub(lineup_offset);
-        let game_idx_pack = (local_slot / SAVES_PER_GAME as usize).saturating_sub(pack_pos_offset);
+        let Some(local_slot) = slot.checked_sub(lineup_offset) else {
+            report.state_files_unmapped += 1;
+            continue;
+        };
+        states.insert(local_slot, (entry.path(), seg_type, slot));
+      }
+    }
+    for (local_slot, (src_data, seg_type, slot)) in states {
+        let Some(game_idx_pack) = (local_slot / SAVES_PER_GAME as usize).checked_sub(pack_pos_offset) else {
+            continue; // BACK card, never assign its files to the first real game.
+        };
         let save_slot = local_slot % SAVES_PER_GAME as usize;
         if game_idx_pack >= pack_games.len() {
             report.state_files_unmapped += 1;
             continue;
         }
-        let game = pack_games[game_idx_pack];
+        let Some(game) = pack_games[game_idx_pack] else { continue };
         let game_saves_dir = library_game_saves_dir(library_root, lineup_name, folder, game);
         fs::create_dir_all(&game_saves_dir)?;
 
         let dst_data = game_saves_dir.join(format!("state_{}.bin", save_slot));
-        fs::copy(entry.path(), &dst_data)?;
+        fs::copy(&src_data, &dst_data)?;
 
-        let src_meta = saves_dir.join(format!("meta_{:03}_{:04}.bin", seg_type, slot));
+        let src_meta = src_data.parent().unwrap().join(format!("meta_{:03}_{:04}.bin", seg_type, slot));
         if src_meta.exists() {
             let dst_meta = game_saves_dir.join(format!("state_{}_meta.bin", save_slot));
             fs::copy(&src_meta, &dst_meta)?;
@@ -268,3 +286,122 @@ fn parse_state_filename(name: &str) -> Option<(u16, usize)> {
     Some((t, s))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Fixture(PathBuf);
+    impl Fixture {
+        fn new(name: &str) -> Self {
+            let root = std::env::temp_dir().join(format!("chronos-sync-{name}-{}", std::process::id()));
+            fs::create_dir(&root).unwrap();
+            for (pack, list) in [
+                ("jp", r#"[{"folder":"FOLDER_FIRST"},{"folder":"GAME001"}]"#),
+                ("jp/FOLDER_FIRST", r#"[{"folder":"GAME002"}]"#),
+                ("us", r#"[{"folder":"FOLDER_US"}]"#),
+                ("us/FOLDER_US", r#"[{"folder":"GAME003"}]"#),
+            ] {
+                fs::create_dir_all(root.join(pack)).unwrap();
+                fs::write(root.join(pack).join("gamelist.json"), list).unwrap();
+            }
+            for game in ["jp/GAME001", "jp/FOLDER_FIRST/GAME002", "us/FOLDER_US/GAME003"] {
+                fs::create_dir_all(root.join(game)).unwrap();
+                fs::write(root.join(game).join("game.json"), r#"{"rom":{"rom":"test.pce","arch":"tg16"}}"#).unwrap();
+            }
+            for pack in ["jp/_root", "jp/FOLDER_FIRST", "us/_root", "us/FOLDER_US"] {
+                fs::create_dir_all(root.join("published/folders").join(pack).join("saves")).unwrap();
+            }
+            fs::create_dir_all(root.join("published/save")).unwrap();
+            fs::write(root.join("published/save/data_008_0000.bin"), vec![0; SRAM_OFFSET + SRAM_SLICE_SIZE]).unwrap();
+            Self(root)
+        }
+        fn sync(&self) -> SyncReport {
+            sync_library_from_published(&SyncOptions {
+                library_root: self.0.clone(), published_root: self.0.join("published"),
+            }).unwrap()
+        }
+    }
+    impl Drop for Fixture { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
+
+    #[test]
+    fn root_folder_cards_keep_their_positions_when_importing_saves() {
+        let f = Fixture::new("root-positions");
+        let saves = f.0.join("published/folders/jp/_root/saves");
+        let mut sram = vec![0; SRAM_SLICE_SIZE];
+        sram[..SRAM_BLOCK_SIZE].fill(17); // folder card: ignore
+        sram[SRAM_BLOCK_SIZE..2 * SRAM_BLOCK_SIZE].fill(42); // GAME001
+        fs::write(saves.join("sram.bin"), sram).unwrap();
+        fs::write(saves.join("data_012_0000.bin"), b"folder-card").unwrap();
+        fs::write(saves.join("data_012_0004.bin"), b"root-game").unwrap();
+        let report = f.sync();
+        assert_eq!(report.sram_blocks_imported, 1);
+        assert_eq!(report.state_files_imported, 1);
+        assert_eq!(fs::read(f.0.join("jp/GAME001/sram.bin")).unwrap(), vec![42; SRAM_BLOCK_SIZE]);
+        assert_eq!(fs::read(f.0.join("jp/GAME001/saves/state_0.bin")).unwrap(), b"root-game");
+        assert!(!f.0.join("jp/FOLDER_FIRST/saves").exists());
+    }
+
+    #[test]
+    fn active_pack_imports_new_live_states_and_ignores_mount_placeholders() {
+        let f = Fixture::new("live-states");
+        fs::write(f.0.join("published/folders/.current"), "us/FOLDER_US\n").unwrap();
+        let pack = f.0.join("published/folders/us/FOLDER_US/saves");
+        let live = f.0.join("published/save");
+        fs::write(pack.join("data_012_0204.bin"), b"older").unwrap();
+        fs::write(pack.join("meta_012_0204.bin"), b"older-meta").unwrap();
+        fs::write(pack.join("data_012_0205.bin"), b"bound-state").unwrap();
+        fs::write(live.join("data_012_0204.bin"), b"newest").unwrap();
+        fs::write(live.join("meta_012_0204.bin"), b"newest-meta").unwrap();
+        fs::write(live.join("data_012_0205.bin"), b"").unwrap();
+        fs::write(live.join("data_012_0200.bin"), b"back-card").unwrap();
+        fs::write(live.join("data_012_0000.bin"), b"wrong-lineup").unwrap();
+        let report = f.sync();
+        let dst = f.0.join("us/FOLDER_US/GAME003/saves");
+        assert_eq!(report.state_files_imported, 2);
+        assert_eq!(report.state_files_unmapped, 1);
+        assert_eq!(fs::read(dst.join("state_0.bin")).unwrap(), b"newest");
+        assert_eq!(fs::read(dst.join("state_0_meta.bin")).unwrap(), b"newest-meta");
+        assert_eq!(fs::read(dst.join("state_1.bin")).unwrap(), b"bound-state");
+        assert!(!f.0.join("jp/GAME001/saves").exists());
+        // Import is a copy: the console's files remain intact.
+        assert_eq!(fs::read(pack.join("data_012_0204.bin")).unwrap(), b"older");
+        assert_eq!(fs::read(live.join("data_012_0204.bin")).unwrap(), b"newest");
+    }
+
+    #[test]
+    fn imports_settings_and_active_sram_from_canonical_save_mount() {
+        let root = std::env::temp_dir().join(format!("chronos-canonical-save-{}", std::process::id()));
+        fs::create_dir(&root).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+        }
+        let _cleanup = Cleanup(root.clone());
+        let library = root.join("library");
+        let published = library.join("published");
+        for dir in ["jp/GAME001", "us", "published/save", "published/folders/jp/_root/saves"] {
+            fs::create_dir_all(library.join(dir)).unwrap();
+        }
+        fs::write(library.join("jp/gamelist.json"), r#"[{"folder":"GAME001"}]"#).unwrap();
+        fs::write(library.join("us/gamelist.json"), "[]").unwrap();
+        fs::write(library.join("jp/GAME001/game.json"), r#"{"rom":{"rom":"test.pce","arch":"tg16"}}"#).unwrap();
+        fs::write(published.join("folders/.current"), "jp/_root\n").unwrap();
+        let mut live = vec![0; SRAM_OFFSET + SRAM_SLICE_SIZE];
+        live[0] = 42;
+        live[SRAM_OFFSET..SRAM_OFFSET + SRAM_BLOCK_SIZE].fill(123);
+        fs::write(published.join("save/data_008_0000.bin"), &live).unwrap();
+        let report = sync_library_from_published(&SyncOptions {
+            library_root: library.clone(), published_root: published.clone(),
+        }).unwrap();
+        assert!(report.backup_flags_updated);
+        assert_eq!(report.sram_blocks_imported, 1);
+        assert_eq!(fs::read(library.join("data_008_0000.bin")).unwrap(), live[..BACKUP_FLAGS_SIZE]);
+        assert_eq!(fs::read(library.join("jp/GAME001/sram.bin")).unwrap(), vec![123; SRAM_BLOCK_SIZE]);
+        // Keep reading old exports when the new layout is absent.
+        fs::create_dir_all(published.join("game/save")).unwrap();
+        fs::rename(published.join("save/data_008_0000.bin"), published.join("game/save/data_008_0000.bin")).unwrap();
+        assert_eq!(sync_library_from_published(&SyncOptions {
+            library_root: library, published_root: published,
+        }).unwrap().sram_blocks_imported, 1);
+    }
+}

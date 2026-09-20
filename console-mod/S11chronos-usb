@@ -1,0 +1,7 @@
+#!/bin/sh
+# rcS has mounted the stock partitions and made /usr/game read-only.
+# S10udev has populated devices; now finish USB setup before S99first_startup.
+case "$1" in
+    start) /bin/mount-usb-drives ;;
+esac
+exit 0

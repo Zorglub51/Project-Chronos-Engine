@@ -5,6 +5,10 @@
 
 pce_log "detach $1"
 
+# Removing an unrelated disk must not interrupt the active library.
+mounted_device=$(mount | awk -v t="$USB_MNT" '$3 == t {print $1; exit}')
+[ "$mounted_device" = "/dev/$1" ] || exit 0
+
 # Kill engine synchronously BEFORE dropping binds so it can't try I/O
 # against soon-to-be-dead bind targets.
 pce_kill_engine

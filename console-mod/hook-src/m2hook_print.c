@@ -20,6 +20,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdarg.h>
+#include <time.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <dirent.h>
@@ -33,6 +35,65 @@
 /* Debug flag - set M2HOOK_DEBUG=1 to enable verbose logging */
 static int g_debug = 0;
 #define DBG(...) do { if (g_debug) fprintf(stderr, __VA_ARGS__); } while(0)
+
+static void cap_log_size(void);
+
+/* Event traces only: no per-frame polling or retained diagnostic buffers.
+ * Preserve errno so enabling diagnostics cannot change error handling. */
+static void trace_event(const char *format, ...)
+{
+    if (!g_debug) return;
+    int saved_errno = errno;
+    static unsigned sequence;
+    struct timespec now = {0};
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    flockfile(stderr);
+    cap_log_size();
+    fprintf(stderr, "[m2hook trace #%u pid=%ld t=%ld.%03ld] ",
+            ++sequence, (long)getpid(), (long)now.tv_sec, now.tv_nsec / 1000000);
+    va_list args;
+    va_start(args, format);
+    vfprintf(stderr, format, args);
+    va_end(args);
+    fputc('\n', stderr);
+    funlockfile(stderr);
+    errno = saved_errno;
+}
+
+static void trace_file(const char *label, const char *path)
+{
+    if (!g_debug) return;
+    int saved_errno = errno;
+    struct stat st;
+    if (stat(path, &st) == 0)
+        trace_event("file %s path=%s dev=%llu ino=%llu size=%lld mode=%o",
+                    label, path, (unsigned long long)st.st_dev,
+                    (unsigned long long)st.st_ino, (long long)st.st_size,
+                    (unsigned)st.st_mode);
+    else
+        trace_event("file %s path=%s errno=%d (%s)", label, path, errno, strerror(errno));
+    errno = saved_errno;
+}
+
+static void trace_mounts(const char *phase)
+{
+    if (!g_debug) return;
+    int saved_errno = errno;
+    trace_event("mount snapshot: %s", phase);
+    FILE *f = fopen("/proc/self/mountinfo", "r");
+    if (f) {
+        char line[1024];
+        while (fgets(line, sizeof(line), f)) {
+            if (!strstr(line, "/usr/game") && !strstr(line, "/mnt/usb")) continue;
+            line[strcspn(line, "\n")] = '\0';
+            trace_event("mountinfo %s", line);
+        }
+        fclose(f);
+    } else {
+        trace_event("cannot read mountinfo errno=%d (%s)", errno, strerror(errno));
+    }
+    errno = saved_errno;
+}
 
 /* Squirrel types (simplified) */
 typedef void* HSQUIRRELVM;
@@ -73,6 +134,8 @@ static sq_getstring_t     p_sq_getstring     = (sq_getstring_t)    (0x87eb8 | 1)
 #if ENABLE_FOLDER_HOOK
 
 #include "save_digest.h"
+#include "save_slice.h"
+#include "folder_worker.h"
 
 #define EXECUTE_PREFIX "execute="
 #define EXECUTE_PREFIX_LEN 8
@@ -90,6 +153,7 @@ static sq_getstring_t     p_sq_getstring     = (sq_getstring_t)    (0x87eb8 | 1)
 #define LIVE_SAVE_DIR "/usr/game/save"
 #define LIVE_DATA_008 "/usr/game/save/data_008_0000.bin"
 #define LIVE_META_008 "/usr/game/save/meta_008_0000.bin"
+#define LIVE_SRAM_PACK LIVE_SAVE_DIR "/.sram-pack"
 
 /* SRAM array (`_92_sram_datas`) layout inside data_008_0000.bin. Confirmed
  * empirically against a Dracula X save (game_index 2 in JP retail) — the
@@ -133,6 +197,9 @@ static const struct swap_file FOLDER_SWAP_FILES[] = {
  */
 static int bind_mount_file(const char *src, const char *dst)
 {
+    trace_event("bind begin src=%s dst=%s", src, dst);
+    trace_file("source", src);
+    trace_file("target-before", dst);
     /* Ensure target exists (mount --bind fails on missing dst). */
     int fd = open(dst, O_RDWR | O_CREAT, 0644);
     if (fd < 0) {
@@ -141,17 +208,33 @@ static int bind_mount_file(const char *src, const char *dst)
     }
     close(fd);
     /* If already bound (e.g., re-entrant), unbind first to avoid stacking. */
-    umount2(dst, MNT_DETACH);
+    int unmount_rc = umount2(dst, MNT_DETACH);
+    int unmount_errno = unmount_rc < 0 ? errno : 0;
+    trace_event("umount-before-bind path=%s rc=%d errno=%d (%s)",
+                dst, unmount_rc, unmount_errno,
+                unmount_errno == EINVAL ? "not a mount point; expected on first bind" : strerror(unmount_errno));
     if (mount(src, dst, NULL, MS_BIND, NULL) < 0) {
         fprintf(stderr, "[m2hook] bind(%s -> %s) failed: %s\n", src, dst, strerror(errno));
         return -1;
+    }
+    trace_file("target-after", dst);
+    if (g_debug) {
+        int saved_errno = errno;
+        struct stat source, target;
+        int same = stat(src, &source) == 0 && stat(dst, &target) == 0 &&
+                   source.st_dev == target.st_dev && source.st_ino == target.st_ino;
+        trace_event("bind complete src=%s dst=%s same_inode=%s", src, dst, same ? "yes" : "NO");
+        errno = saved_errno;
     }
     return 0;
 }
 
 static int unbind_mount_file(const char *path)
 {
-    if (umount2(path, MNT_DETACH) < 0 && errno != EINVAL && errno != ENOENT) {
+    int rc = umount2(path, MNT_DETACH);
+    int error = rc < 0 ? errno : 0;
+    trace_event("umount path=%s rc=%d errno=%d (%s)", path, rc, error, strerror(error));
+    if (rc < 0 && error != EINVAL && error != ENOENT) {
         fprintf(stderr, "[m2hook] umount(%s) failed: %s\n", path, strerror(errno));
         return -1;
     }
@@ -209,31 +292,54 @@ static void fsync_dir(const char *path)
     close(fd);
 }
 
-/* Update CURRENT_FILE atomically: write to .current.tmp + fsync + rename. */
-static int write_current(const char *folder_name)
+/* Commit a tiny ownership/current marker, including directory durability. */
+static int write_pack_marker(const char *path, const char *value)
 {
-    const char *tmp = CURRENT_FILE ".tmp";
+    char tmp[320], parent[320], line[96];
+    if (snprintf(tmp, sizeof(tmp), "%s.tmp", path) >= (int)sizeof(tmp) ||
+        snprintf(parent, sizeof(parent), "%s", path) >= (int)sizeof(parent)) return -1;
+    int length = snprintf(line, sizeof(line), "%s\n", value);
+    if (length < 0 || length >= (int)sizeof(line)) return -1;
     int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0) {
-        fprintf(stderr, "[m2hook] open(%s) failed: %s\n", tmp, strerror(errno));
-        return -1;
-    }
-    size_t len = strlen(folder_name);
-    if (write(fd, folder_name, len) != (ssize_t)len ||
-        write(fd, "\n", 1) != 1) {
-        fprintf(stderr, "[m2hook] write(%s) failed: %s\n", tmp, strerror(errno));
-        close(fd);
-        return -1;
-    }
-    fsync(fd);
+    if (fd < 0) return -1;
+    int rc = slice_write(fd, line, length, 0) || fsync(fd);
+    if (close(fd)) rc = -1;
+    if (rc || rename(tmp, path)) { unlink(tmp); return -1; }
+    char *slash = strrchr(parent, '/');
+    if (!slash) return -1;
+    *slash = 0;
+    fd = open(parent, O_RDONLY);
+    if (fd < 0) return -1;
+    rc = fsync(fd);
     close(fd);
-    if (rename(tmp, CURRENT_FILE) < 0) {
-        fprintf(stderr, "[m2hook] rename(%s -> %s) failed: %s\n",
-                tmp, CURRENT_FILE, strerror(errno));
-        return -1;
-    }
-    fsync_dir(FOLDERS_ROOT);
+    return rc;
+}
+
+static int write_current(const char *target)
+{
+    if (write_pack_marker(LIVE_SRAM_PACK, target) ||
+        write_pack_marker(CURRENT_FILE, target)) return -1;
+    trace_event("current committed: %s", target);
     return 0;
+}
+
+/* Valid live data belongs to the active pack, and can be newer than its
+ * snapshot (snapshots are exported only when leaving a pack). Older hooks
+ * have no ownership marker: adopt their .current once during migration. */
+static int live_sram_is_current(const char *target)
+{
+    char owner[96];
+    int fd = open(LIVE_SRAM_PACK, O_RDONLY);
+    if (fd < 0 && errno != ENOENT) return 0;
+    if (fd >= 0) {
+        ssize_t n = read(fd, owner, sizeof(owner) - 1);
+        close(fd);
+        if (n <= 0) return 0;
+        owner[n] = 0;
+        owner[strcspn(owner, "\n")] = 0;
+        if (strcmp(owner, target)) return 0;
+    }
+    return save_digest_process(LIVE_DATA_008, LIVE_META_008, 0) == 1;
 }
 
 /* Read CURRENT_FILE into out (caller-supplied buffer). Returns 0 on success
@@ -243,6 +349,8 @@ static int read_current(char *out, size_t outsz)
 {
     int fd = open(CURRENT_FILE, O_RDONLY);
     if (fd < 0) {
+        trace_event("current unavailable path=%s errno=%d (%s); fallback=%s",
+                    CURRENT_FILE, errno, strerror(errno), ROOT_NAME);
         snprintf(out, outsz, "%s", ROOT_NAME);
         return 1;
     }
@@ -255,6 +363,7 @@ static int read_current(char *out, size_t outsz)
     out[n] = '\0';
     char *nl = strchr(out, '\n');
     if (nl) *nl = '\0';
+    trace_event("current read: %s", out);
     return 0;
 }
 
@@ -437,8 +546,9 @@ static void unbind_state_files(const char *src_dir, const char *dst_dir)
         if (!is_state_save_file(e->d_name)) continue;
         char dst[320];
         snprintf(dst, sizeof(dst), "%s/%s", dst_dir, e->d_name);
-        umount2(dst, MNT_DETACH);
-        unlink(dst);
+        unbind_mount_file(dst);
+        int rc = unlink(dst);
+        trace_event("save underlay unlink path=%s rc=%d errno=%d", dst, rc, rc < 0 ? errno : 0);
         ++n;
     }
     closedir(d);
@@ -449,11 +559,11 @@ static void unbind_state_files(const char *src_dir, const char *dst_dir)
  * play that isn't already in `pack_dir` (so wasn't bound) — typically new
  * save slots the user added. Copy across (different filesystems) and
  * unlink the live copy. */
-static void migrate_new_saves(const char *live_dir, const char *pack_dir)
+static int migrate_new_saves(const char *live_dir, const char *pack_dir)
 {
     DIR *d = opendir(live_dir);
-    if (!d) return;
-    int n = 0;
+    if (!d) return -1;
+    int n = 0, rc = 0;
     struct dirent *e;
     while ((e = readdir(d)) != NULL) {
         if (!is_state_save_file(e->d_name)) continue;
@@ -465,13 +575,17 @@ static void migrate_new_saves(const char *live_dir, const char *pack_dir)
         snprintf(tmp, sizeof(tmp), "%s.tmp", pack_path);
         if (copy_with_fsync(live_path, tmp) == 0) {
             if (rename(tmp, pack_path) == 0) {
-                unlink(live_path);
+                if (unlink(live_path)) { rc = -1; break; }
                 ++n;
             } else {
                 fprintf(stderr, "[m2hook] saves: rename(%s -> %s) failed: %s\n",
                         tmp, pack_path, strerror(errno));
                 unlink(tmp);
+                rc = -1; break;
             }
+        } else {
+            unlink(tmp);
+            rc = -1; break;
         }
     }
     closedir(d);
@@ -479,160 +593,27 @@ static void migrate_new_saves(const char *live_dir, const char *pack_dir)
         fsync_dir(pack_dir);
         fprintf(stderr, "[m2hook] saves: migrated %d new file(s) to %s\n", n, pack_dir);
     }
-}
-
-/* Splice the SRAM slice out of LIVE_DATA_008 -> dst_sram_path. dst_sram_path
- * is created (or overwritten) with exactly SRAM_SLICE_SIZE bytes. Surrounding
- * bytes of data_008 are NOT read. Returns 0 on success. Non-fatal failure
- * is fine — caller logs and continues. */
-static int sram_splice_out(const char *dst_sram_path)
-{
-    int sfd = open(LIVE_DATA_008, O_RDONLY);
-    if (sfd < 0) {
-        if (errno == ENOENT) return 0;  /* no live data_008 yet — pristine system */
-        fprintf(stderr, "[m2hook] sram: open(%s) failed: %s\n", LIVE_DATA_008, strerror(errno));
-        return -1;
-    }
-    if (lseek(sfd, (off_t)SRAM_OFFSET, SEEK_SET) != (off_t)SRAM_OFFSET) {
-        fprintf(stderr, "[m2hook] sram: seek(%s) failed: %s\n", LIVE_DATA_008, strerror(errno));
-        close(sfd);
-        return -1;
-    }
-
-    char dst_tmp[320];
-    snprintf(dst_tmp, sizeof(dst_tmp), "%s.tmp", dst_sram_path);
-    int dfd = open(dst_tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (dfd < 0) {
-        fprintf(stderr, "[m2hook] sram: open(%s) failed: %s\n", dst_tmp, strerror(errno));
-        close(sfd);
-        return -1;
-    }
-
-    /* Stream copy in 64 KB chunks. */
-    char buf[65536];
-    size_t remaining = SRAM_SLICE_SIZE;
-    int rc = 0;
-    while (remaining > 0) {
-        size_t want = remaining > sizeof(buf) ? sizeof(buf) : remaining;
-        ssize_t n = read(sfd, buf, want);
-        if (n <= 0) {
-            fprintf(stderr, "[m2hook] sram: short read at %lu bytes remaining: %s\n",
-                    (unsigned long)remaining, n < 0 ? strerror(errno) : "EOF");
-            rc = -1; break;
-        }
-        ssize_t off = 0;
-        while (off < n) {
-            ssize_t w = write(dfd, buf + off, (size_t)(n - off));
-            if (w < 0) {
-                fprintf(stderr, "[m2hook] sram: write failed: %s\n", strerror(errno));
-                rc = -1; goto done;
-            }
-            off += w;
-        }
-        remaining -= (size_t)n;
-    }
-done:
-    close(sfd);
-    if (rc == 0) {
-        fsync(dfd);
-        close(dfd);
-        if (rename(dst_tmp, dst_sram_path) < 0) {
-            fprintf(stderr, "[m2hook] sram: rename(%s->%s) failed: %s\n",
-                    dst_tmp, dst_sram_path, strerror(errno));
-            unlink(dst_tmp);
-            return -1;
-        }
-        fprintf(stderr, "[m2hook] sram: out -> %s (%lu bytes)\n",
-                dst_sram_path, (unsigned long)SRAM_SLICE_SIZE);
-    } else {
-        close(dfd);
-        unlink(dst_tmp);
-    }
     return rc;
 }
 
-/* Splice src_sram_path -> LIVE_DATA_008 at offset SRAM_OFFSET, writing
- * exactly SRAM_SLICE_SIZE bytes. If src_sram_path is missing, zero out the
- * SRAM slice instead (a fresh pack with no saves yet). Surrounding bytes
- * of data_008 (BACKUP_FLAGS, settings) are preserved. */
-static int sram_splice_in(const char *src_sram_path)
+/* Return conventions stay 0/-1 for callers; helpers report changed/unchanged. */
+static int sram_splice_out(const char *path)
 {
-    fprintf(stderr, "[m2hook] sram: in START src=%s\n", src_sram_path);
-    fflush(stderr);
-    int sfd = open(src_sram_path, O_RDONLY);
-    int zero_mode = 0;
-    if (sfd < 0) {
-        if (errno != ENOENT) {
-            fprintf(stderr, "[m2hook] sram: open(%s) failed: %s\n", src_sram_path, strerror(errno));
-            fflush(stderr);
-            return -1;
-        }
-        zero_mode = 1;
-    }
+    int rc = save_slice_export(LIVE_DATA_008, path, SRAM_OFFSET, SRAM_SLICE_SIZE);
+    trace_event("sram out: %s path=%s errno=%d", rc < 0 ? "failed" :
+                rc ? "written" : "unchanged", path, rc < 0 ? errno : 0);
+    return rc < 0 ? -1 : 0;
+}
 
-    int dfd = open(LIVE_DATA_008, O_WRONLY);
-    if (dfd < 0) {
-        fprintf(stderr, "[m2hook] sram: open(%s) for in failed: %s\n", LIVE_DATA_008, strerror(errno));
-        fflush(stderr);
-        if (!zero_mode) close(sfd);
-        return -1;
-    }
-    fprintf(stderr, "[m2hook] sram: in opened src=%d dst=%d zero_mode=%d\n", sfd, dfd, zero_mode);
-    fflush(stderr);
-    if (lseek(dfd, (off_t)SRAM_OFFSET, SEEK_SET) != (off_t)SRAM_OFFSET) {
-        fprintf(stderr, "[m2hook] sram: seek(dst) failed: %s\n", strerror(errno));
-        if (!zero_mode) close(sfd);
-        close(dfd);
-        return -1;
-    }
-
-    char buf[65536];
-    size_t remaining = SRAM_SLICE_SIZE;
-    int rc = 0;
-    if (zero_mode) memset(buf, 0, sizeof(buf));
-
-    while (remaining > 0) {
-        size_t want = remaining > sizeof(buf) ? sizeof(buf) : remaining;
-        ssize_t n;
-        if (zero_mode) {
-            n = (ssize_t)want;
-        } else {
-            n = read(sfd, buf, want);
-            if (n <= 0) {
-                if (n < 0) fprintf(stderr, "[m2hook] sram: short read in: %s\n", strerror(errno));
-                /* Source shorter than SRAM_SLICE_SIZE -> pad with zeros. */
-                memset(buf, 0, want);
-                n = (ssize_t)want;
-                /* From here on, fill rest with zeros without re-reading. */
-                close(sfd); sfd = -1; zero_mode = 1;
-            }
-        }
-        ssize_t off = 0;
-        while (off < n) {
-            ssize_t w = write(dfd, buf + off, (size_t)(n - off));
-            if (w < 0) {
-                fprintf(stderr, "[m2hook] sram: write in failed: %s\n", strerror(errno));
-                rc = -1; goto done_in;
-            }
-            off += w;
-        }
-        remaining -= (size_t)n;
-    }
-done_in:
-    if (!zero_mode && sfd >= 0) close(sfd);
-    if (fsync(dfd) != 0) rc = -1;
-    close(dfd);
-    if (rc == 0 && save_digest_refresh(LIVE_DATA_008, LIVE_META_008) != 0) {
-        fprintf(stderr, "[m2hook] sram: refresh save digest failed: %s\n", strerror(errno));
-        rc = -1;
-    }
-    if (rc == 0) {
-        fprintf(stderr, "[m2hook] sram: in <- %s (%s, %lu bytes)\n",
-                zero_mode ? "(zeros)" : src_sram_path,
-                zero_mode ? "no source" : "ok",
-                (unsigned long)SRAM_SLICE_SIZE);
-    }
-    return rc;
+static int sram_splice_in(const char *path)
+{
+    int rc = save_slice_import(LIVE_DATA_008, path, SRAM_OFFSET, SRAM_SLICE_SIZE);
+    /* Also repair a stale digest after an interrupted import. The digest
+     * helper avoids writing metadata whose digest already matches. */
+    if (rc >= 0 && save_digest_refresh(LIVE_DATA_008, LIVE_META_008)) rc = -1;
+    trace_event("sram in: %s path=%s errno=%d", rc < 0 ? "failed" :
+                rc ? "written" : "unchanged", path, rc < 0 ? errno : 0);
+    return rc < 0 ? -1 : 0;
 }
 
 /* Perform the folder swap:
@@ -658,7 +639,18 @@ static int do_folder_swap(const char *lineup, const char *dir)
         return 0;
     }
 
+    char check[320];
+    const char *required[] = {"title_mode_top.psb.m", "title_prof.psb.m", NULL};
+    for (int i = 0; i < 3; ++i) {
+        char motion[64];
+        snprintf(motion, sizeof(motion), MOTION_SHEET_FMT, lineup);
+        snprintf(check, sizeof(check), "%s/%s/%s", FOLDERS_ROOT, target,
+                 i < 2 ? required[i] : motion);
+        if (access(check, R_OK)) return -1;
+    }
+
     fprintf(stderr, "[m2hook] folder swap: %s -> %s\n", cur, target);
+    trace_mounts("before folder swap");
     fflush(stderr);
 
     /* Build incoming + outgoing pack paths up front so phases can share them. */
@@ -684,14 +676,18 @@ static int do_folder_swap(const char *lineup, const char *dir)
      * data_008 SRAM slice into the pack's sram.bin (still needs a copy
      * because BACKUP_FLAGS and SRAM share data_008). */
     if (have_outgoing) {
-        migrate_new_saves(LIVE_SAVE_DIR, outgoing_saves);
-        unbind_state_files(outgoing_saves, LIVE_SAVE_DIR);
-
+        trace_event("swap phase=outgoing-saves path=%s", outgoing_saves);
         char outgoing_sram[280];
         snprintf(outgoing_sram, sizeof(outgoing_sram), "%s/sram.bin", outgoing_saves);
         if (sram_splice_out(outgoing_sram) != 0) {
-            fprintf(stderr, "[m2hook] folder swap: warning: SRAM backup failed, continuing\n");
+            fprintf(stderr, "[m2hook] folder swap: SRAM backup failed; aborting\n");
+            return -1;
         }
+        if (migrate_new_saves(LIVE_SAVE_DIR, outgoing_saves)) return -1;
+        /* A crash during import must not make incoming bytes look like a
+         * valid outgoing save on reboot, even if the digest was refreshed. */
+        if (write_pack_marker(LIVE_SRAM_PACK, "pending")) return -1;
+        unbind_state_files(outgoing_saves, LIVE_SAVE_DIR);
     }
 
     /* Phase 2: bind-mount the incoming pack's PSBs over the live ones.
@@ -700,6 +696,7 @@ static int do_folder_swap(const char *lineup, const char *dir)
      * unaltered. */
     {
         char src[320], dst[320];
+        trace_event("swap phase=incoming-profiles pack=%s", target);
         /* config/title_mode_top.psb.m */
         snprintf(src, sizeof(src), "%s/%s/%s/title_mode_top.psb.m", FOLDERS_ROOT, lineup, dir);
         snprintf(dst, sizeof(dst), "%s/config/title_mode_top.psb.m", LIVE_DIR);
@@ -721,22 +718,27 @@ static int do_folder_swap(const char *lineup, const char *dir)
     /* Phase 3 (swap-in): bind the incoming pack's state save files over
      * the live save dir, then splice the incoming pack's SRAM slice into
      * data_008. */
+    trace_event("swap phase=incoming-saves path=%s", incoming_saves);
     if (bind_state_files(incoming_saves, LIVE_SAVE_DIR) != 0) {
-        fprintf(stderr, "[m2hook] folder swap: warning: state file bind failed\n");
+        fprintf(stderr, "[m2hook] folder swap: state file bind failed\n");
+        return -1;
     }
     {
         char incoming_sram[280];
         snprintf(incoming_sram, sizeof(incoming_sram), "%s/sram.bin", incoming_saves);
         if (sram_splice_in(incoming_sram) != 0) {
-            fprintf(stderr, "[m2hook] folder swap: warning: SRAM restore failed\n");
+            fprintf(stderr, "[m2hook] folder swap: SRAM restore failed\n");
+            return -1;
         }
     }
 
     if (write_current(target) != 0) {
         fprintf(stderr, "[m2hook] warning: failed to update %s\n", CURRENT_FILE);
+        return -1;
     }
 
     fprintf(stderr, "[m2hook] folder swap: done -> %s\n", target);
+    trace_mounts("after folder swap");
     fflush(stderr);
     return 0;
 }
@@ -819,8 +821,7 @@ static void cap_log_size(void)
     if (fstat(fd, &st) != 0) return;
     if (st.st_size <= LOG_SIZE_CAP) return;
 
-    /* Reset both file length and our write offset. Single-writer process,
-     * so this is safe. */
+    /* Callers hold stderr's stream lock, including the IO worker. */
     if (ftruncate(fd, 0) == 0) {
         lseek(fd, 0, SEEK_SET);
     }
@@ -858,6 +859,7 @@ void sq_printfunc(HSQUIRRELVM v, SQChar *format, SQInteger outlen, SQChar *outpu
     }
 #endif
 
+    flockfile(stderr);
     cap_log_size();
 
     fprintf(stderr, "[SQ] %s", msg);
@@ -865,6 +867,7 @@ void sq_printfunc(HSQUIRRELVM v, SQChar *format, SQInteger outlen, SQChar *outpu
     if (len == 0 || msg[len-1] != '\n')
         fprintf(stderr, "\n");
     fflush(stderr);
+    funlockfile(stderr);
 }
 
 /*
@@ -964,6 +967,7 @@ static int parse_region_tag(const char *tag,
     if (lineup_len + 1 > lineup_sz) return -1;
     memcpy(out_lineup, lineup_start, lineup_len);
     out_lineup[lineup_len] = '\0';
+    if (strlen(underscore + 1) >= dir_sz) return -1;
     snprintf(out_dir, dir_sz, "%s", underscore + 1);
     return 0;
 }
@@ -994,6 +998,29 @@ static SQInteger native_exit_game_folder(HSQUIRRELVM v)
     return 0;
 }
 
+static struct folder_worker g_folder_worker = FOLDER_WORKER_INIT;
+
+static SQInteger native_begin_folder_swap(HSQUIRRELVM v)
+{
+    char lineup[8], dir[64];
+    const char *tag = vm_get_string(v, 2);
+    int error = EINVAL;
+    if (parse_region_tag(tag, lineup, sizeof(lineup), dir, sizeof(dir)) == 0 &&
+        valid_lineup(lineup) && valid_dir_name(dir))
+        error = folder_worker_begin(&g_folder_worker, lineup, dir, do_folder_swap);
+    trace_event("async swap start tag=%s error=%d", tag ? tag : "(null)", error);
+    p_sq_pushstring(v, error ? "error" : "busy", -1);
+    return 1;
+}
+
+static SQInteger native_poll_folder_swap(HSQUIRRELVM v)
+{
+    int result = folder_worker_poll(&g_folder_worker);
+    if (result != 1) trace_event("async swap complete result=%d", result);
+    p_sq_pushstring(v, result == 1 ? "busy" : result == 0 ? "ok" : "error", -1);
+    return 1;
+}
+
 /* Recursion guard: register_folder_natives calls sq_pushstring, which
  * lands on our trampoline → hook_sq_pushstring_handler. Without this
  * guard we'd re-enter the registration logic infinitely. */
@@ -1013,6 +1040,13 @@ static void register_folder_natives(HSQUIRRELVM v)
     p_sq_pushstring(v, "exitGameFolder", -1);
     p_sq_newclosure(v, native_exit_game_folder, 0);
     p_sq_newslot(v, -3, 0 /*SQFalse*/);
+
+    p_sq_pushstring(v, "beginGameFolderSwap", -1);
+    p_sq_newclosure(v, native_begin_folder_swap, 0);
+    p_sq_newslot(v, -3, 0);
+    p_sq_pushstring(v, "pollGameFolderSwap", -1);
+    p_sq_newclosure(v, native_poll_folder_swap, 0);
+    p_sq_newslot(v, -3, 0);
 
     p_sq_pop(v, 1);  /* pop root table */
 
@@ -1273,6 +1307,8 @@ static void m2hook_init(void)
     }
 
 #if ENABLE_FOLDER_HOOK
+    trace_event("startup executable=%s", exe);
+    trace_mounts("before startup binds");
     /* Bind-mount the active pack's PSBs over /usr/game/040 BEFORE the
      * engine reads them. parse_current gives us "<lineup>/<dir>"; if the
      * pack exists on disk, bind its three PSBs (title_mode_top, title_prof,
@@ -1282,32 +1318,46 @@ static void m2hook_init(void)
         char init_lineup[8], init_dir[64];
         if (parse_current(init_lineup, sizeof(init_lineup), init_dir, sizeof(init_dir)) == 0
             && valid_lineup(init_lineup) && valid_dir_name(init_dir)) {
+            int failures = 0;
             char src[320], dst[320], motion_basename[64];
             snprintf(src, sizeof(src), "%s/%s/%s/title_mode_top.psb.m",
                      FOLDERS_ROOT, init_lineup, init_dir);
             snprintf(dst, sizeof(dst), "%s/config/title_mode_top.psb.m", LIVE_DIR);
-            bind_mount_file(src, dst);
+            failures += bind_mount_file(src, dst) != 0;
             snprintf(src, sizeof(src), "%s/%s/%s/title_prof.psb.m",
                      FOLDERS_ROOT, init_lineup, init_dir);
             snprintf(dst, sizeof(dst), "%s/config/title_prof.psb.m", LIVE_DIR);
-            bind_mount_file(src, dst);
+            failures += bind_mount_file(src, dst) != 0;
             snprintf(motion_basename, sizeof(motion_basename), MOTION_SHEET_FMT, init_lineup);
             snprintf(src, sizeof(src), "%s/%s/%s/%s",
                      FOLDERS_ROOT, init_lineup, init_dir, motion_basename);
             snprintf(dst, sizeof(dst), "%s/motion/%s", LIVE_DIR, motion_basename);
-            bind_mount_file(src, dst);
+            failures += bind_mount_file(src, dst) != 0;
             /* Bind active pack's state save files + splice SRAM. */
             char init_saves[280];
             snprintf(init_saves, sizeof(init_saves), "%s/%s/%s/saves",
                      FOLDERS_ROOT, init_lineup, init_dir);
-            bind_state_files(init_saves, LIVE_SAVE_DIR);
+            failures += bind_state_files(init_saves, LIVE_SAVE_DIR) != 0;
             char init_sram[280];
             snprintf(init_sram, sizeof(init_sram), "%s/sram.bin", init_saves);
-            sram_splice_in(init_sram);
-            fprintf(stderr, "[m2hook] init: bind-mounted active pack %s/%s\n",
+            char target[80];
+            snprintf(target, sizeof(target), "%s/%s", init_lineup, init_dir);
+            if (live_sram_is_current(target)) {
+                trace_event("startup SRAM: preserve newer live save for %s", target);
+                failures += write_pack_marker(LIVE_SRAM_PACK, target) != 0;
+            } else {
+                int restored = sram_splice_in(init_sram);
+                failures += restored != 0;
+                if (!restored) failures += write_pack_marker(LIVE_SRAM_PACK, target) != 0;
+            }
+            fprintf(stderr, "[m2hook] init: active pack %s/%s, setup failures=%d\n",
+                    init_lineup, init_dir, failures);
+        } else {
+            fprintf(stderr, "[m2hook] init: invalid pack %s/%s; startup binds skipped\n",
                     init_lineup, init_dir);
         }
     }
+    trace_mounts("after startup binds");
 #endif
 
     uintptr_t code_addr;

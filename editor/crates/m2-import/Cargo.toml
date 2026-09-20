@@ -14,4 +14,4 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 m2-mzs = { path = "../m2-mzs" }
 m2-psb = { path = "../m2-psb" }
 m2-publish = { path = "../m2-publish" }
-pcd-core = { git = "https://github.com/Zorglub51/pce-pcd-rust", rev = "de7f1712f72db5c976a5e4dc3499a566b3d31d32" }
+pcd-core = { git = "https://github.com/Zorglub51/pce-pcd-rust", rev = "9a6c04536f01d76261ee88236ca6f31831638ed7" }

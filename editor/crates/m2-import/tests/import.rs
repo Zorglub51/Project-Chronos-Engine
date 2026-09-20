@@ -28,7 +28,18 @@ fn cue_conversion_bios_extraction_and_direct_pcd_copy() {
         raw[n * 2352 + 16..n * 2352 + 2064].copy_from_slice(sector);
     }
     fs::write(root.join("Track 01.bin"), &raw).unwrap();
-    fs::write(root.join("Track 02.bin"), vec![0; 2352 * 75]).unwrap();
+    // Real stereo signal: silence alone cannot detect a reset of the Opus
+    // encoder at each one-second PCD boundary.
+    let audio: Vec<i16> = (0..44100 * 3)
+        .flat_map(|n| {
+            [437.37, 997.23].map(|frequency| {
+                (0.4 * (n as f64 / 44100.0 * std::f64::consts::TAU * frequency).sin() * 32768.0)
+                    as i16
+            })
+        })
+        .collect();
+    let audio_bytes: Vec<u8> = audio.iter().flat_map(|v| v.to_le_bytes()).collect();
+    fs::write(root.join("Track 02.bin"), &audio_bytes).unwrap();
     let progress = RefCell::new(Vec::new());
     let first = import_rom(&cue, &root.join("game"), Some(&bios), &|p| {
         progress.borrow_mut().push(p)
@@ -40,6 +51,34 @@ fn cue_conversion_bios_extraction_and_direct_pcd_copy() {
     let archive = PcdArchive::open(&output).unwrap();
     assert_eq!(archive.info()[0].tracks.len(), 2);
     assert_eq!(archive.data_chunk(0).unwrap(), data);
+    let extracted = pcd_core::extract_pecd(pcd_core::ExtractOptions {
+        input: &output,
+        out_dir: &root.join("audio-check"),
+        write_empty: false,
+        dump: false,
+        progress: None,
+    })
+    .unwrap();
+    let restored_bin = fs::read(&extracted[0].bin).unwrap();
+    assert_eq!(restored_bin.len(), raw.len() + audio_bytes.len());
+    let restored_audio = &restored_bin[raw.len()..];
+    for second in 1..=3 {
+        let boundary = second * 44100 - 16 * 588;
+        for channel in 0..2 {
+            let (mut error, mut energy) = (0.0f64, 0.0f64);
+            for frame in boundary - 441..boundary + 441 {
+                let i = frame * 2 + channel;
+                let actual = i16::from_le_bytes([restored_audio[i * 2], restored_audio[i * 2 + 1]]);
+                error += (f64::from(actual) - f64::from(audio[i])).powi(2);
+                energy += f64::from(audio[i]).powi(2);
+            }
+            assert!(
+                error / energy < 0.025,
+                "CD audio discontinuity at {second}s, channel {channel}: {}",
+                error / energy
+            );
+        }
+    }
     assert!(progress
         .borrow()
         .iter()

@@ -78,6 +78,12 @@ In a game's ROM field, choose:
 - **`.pcd`**: the archive structure is checked and the file copied byte for byte;
   no separate BIOS setup or re-encoding is needed.
 
+CD conversions include the 2026-09-20 audio fix: a continuous Opus encoder
+preserves sound across one-second PCD chunks, silence and the final audio tail,
+and filtered resampling preserves treble. Reconvert CUE/BIN sources imported
+with older editor builds if their CD audio clicks or distorts. Importing an
+already converted `.pcd` copies its audio unchanged and cannot repair it.
+
 The editor displays conversion stages and elapsed time, or byte progress for
 copies. Errors identify missing tracks, invalid archives or BIOS files, and
 failed writes. Work runs off the UI thread; editing is paused until it finishes.

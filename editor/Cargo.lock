@@ -2706,7 +2706,7 @@ checksum = "35fb2e5f958ec131621fdd531e9fc186ed768cbe395337403ae56c17a74c68ec"
 [[package]]
 name = "pcd-core"
 version = "0.1.0"
-source = "git+https://github.com/Zorglub51/pce-pcd-rust?rev=de7f1712f72db5c976a5e4dc3499a566b3d31d32#de7f1712f72db5c976a5e4dc3499a566b3d31d32"
+source = "git+https://github.com/Zorglub51/pce-pcd-rust?rev=9a6c04536f01d76261ee88236ca6f31831638ed7#9a6c04536f01d76261ee88236ca6f31831638ed7"
 dependencies = [
  "anyhow",
  "lz4",

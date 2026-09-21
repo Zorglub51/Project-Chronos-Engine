@@ -155,8 +155,13 @@ pub fn import_rom(
         .unwrap_or_default()
         .to_string_lossy()
         .to_ascii_lowercase();
+    let name = source.file_name().context("ROM has no filename")?;
+    let packed_hucard = name
+        .to_string_lossy()
+        .to_ascii_lowercase()
+        .ends_with(".pce.m");
     ensure!(
-        ["cue", "pcd", "pce", "sgx", "bin"].contains(&extension.as_str()),
+        packed_hucard || ["cue", "pcd", "pce", "sgx", "bin"].contains(&extension.as_str()),
         "Unsupported ROM format: {extension}"
     );
     if extension == "bin" {
@@ -164,6 +169,23 @@ pub fn import_rom(
     }
     let converted = extension == "cue";
     let cd = converted || extension == "pcd";
+    if packed_hucard {
+        // Inspect only the container header; preserve the encrypted payload.
+        let mut header = [0; m2_mzs::HEADER_SIZE];
+        let mut input = File::open(source)?;
+        input
+            .read_exact(&mut header)
+            .context("Truncated .pce.m HuCard")?;
+        ensure!(
+            &header[..4] == m2_mzs::MAGIC,
+            "Invalid .pce.m HuCard: expected an MZS archive"
+        );
+        ensure!(
+            u32::from_le_bytes(header[4..8].try_into().unwrap()) > 0
+                && input.metadata()?.len() > m2_mzs::HEADER_SIZE as u64,
+            "The .pce.m HuCard contains an empty or truncated ROM"
+        );
+    }
     if converted {
         let status = bios_status(bios);
         ensure!(status.ready, "{}", status.message);
@@ -181,10 +203,22 @@ pub fn import_rom(
         PcdArchive::open(source).context("Invalid or truncated PCD archive")?;
     }
     fs::create_dir_all(destination)?;
-    let name = source.file_name().context("ROM has no filename")?;
     let mut output = destination.join(name);
     if converted {
         output.set_extension("pcd");
+    }
+    if packed_hucard && output.exists() {
+        // MZS encryption depends on the basename. Reuse identical archives;
+        // never silently rename or replace a different archive on collision.
+        ensure!(same_file_contents(source, &output)?,
+            "A different HuCard named '{}' already exists in this game folder. .pce.m archives must keep their original filename; choose another game folder.",
+            name.to_string_lossy());
+        report(progress, "ROM already imported", Some((1, 1)));
+        return Ok(ImportResult {
+            filename: name.to_string_lossy().into(),
+            converted,
+            cd,
+        });
     }
     if !converted && output.exists() && fs::canonicalize(source)? == fs::canonicalize(&output)? {
         return Ok(ImportResult {
@@ -258,4 +292,25 @@ pub fn import_rom(
         converted,
         cd,
     })
+}
+
+fn same_file_contents(a: &Path, b: &Path) -> Result<bool> {
+    let mut a = File::open(a)?;
+    let mut b = File::open(b)?;
+    let mut remaining = a.metadata()?.len();
+    if remaining != b.metadata()?.len() {
+        return Ok(false);
+    }
+    let mut left = [0; 16 * 1024];
+    let mut right = [0; 16 * 1024];
+    while remaining > 0 {
+        let count = remaining.min(left.len() as u64) as usize;
+        a.read_exact(&mut left[..count])?;
+        b.read_exact(&mut right[..count])?;
+        if left[..count] != right[..count] {
+            return Ok(false);
+        }
+        remaining -= count as u64;
+    }
+    Ok(true)
 }

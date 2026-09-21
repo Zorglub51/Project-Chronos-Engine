@@ -91,7 +91,11 @@ fn basename(p: &str) -> String {
     // appends `.m` internally when reading. HuCard ROMs in the library are
     // hardlinked as the encrypted `.pce.m` form, so strip that here.
     // CD-ROM (`.pcd`) files have no `.m` form and pass through unchanged.
-    bn.strip_suffix(".m").unwrap_or(bn).to_string()
+    if bn.to_ascii_lowercase().ends_with(".m") {
+        bn[..bn.len() - 2].to_string()
+    } else {
+        bn.to_string()
+    }
 }
 
 fn set_path(tree: &mut Value, path: &[&str], new_value: Value) -> Result<(), Error> {

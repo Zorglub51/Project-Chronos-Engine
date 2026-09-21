@@ -45,6 +45,15 @@ test('PCD bypasses BIOS requirements and keeps Arcade CD selection',async()=>{
     assert.equal(t.entry.game.display.csize,4);
     assert.deepEqual(t.calls.map(c=>c.command),['import_rom','saveNow']);
 });
+test('Packed HuCard import keeps its original filename without requesting BIOS',async()=>{
+    const t=setup(async()=>({filename:'Neutopia_II_J.PCE.m',cd:false,converted:false}));
+    vm.runInContext('editorSettings.bios=null',t.context);
+    await vm.runInContext("importRomFile('/roms/Neutopia_II_J.PCE.m','rom.rom',document.getElementById('f-rom'))",t.context);
+    assert.equal(t.entry.game.rom.rom,'Neutopia_II_J.PCE.m');
+    assert.equal(t.entry.game.display.csize,0);
+    assert.equal(t.element('f-rom').value,'Neutopia_II_J.PCE.m');
+    assert.deepEqual(t.calls.map(c=>c.command),['import_rom','saveNow']);
+});
 test('Import failure unlocks the UI, shows the error and preserves the old ROM',async()=>{
     const t=setup(async command=>{if(command==='get_bios_status')return{ready:true};throw new Error('Track 02.bin is missing');});
     await vm.runInContext("importRomFile('/roms/Game.cue','rom.rom',document.getElementById('f-rom'))",t.context);

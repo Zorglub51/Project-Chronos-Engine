@@ -84,6 +84,64 @@ pub fn publish(opts: &PublishOptions) -> Result<PublishReport, Error> {
 
 // ---- ROM packing ----
 
+#[cfg(test)]
+mod rom_tests {
+    use super::*;
+    use crate::library::{GameJson, GameRom, LineupEntry};
+    use std::fs;
+
+    struct Temp(PathBuf);
+    impl Drop for Temp {
+        fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+    }
+
+    #[test]
+    fn packed_hucards_are_copied_verbatim_and_cannot_overwrite_raw_rom_outputs() {
+        let root = Temp(std::env::temp_dir().join(format!("chronos-packed-roms-{}-{}",
+            std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos())));
+        fs::create_dir(&root.0).unwrap();
+        let mut library = Library {
+            jp: Lineup { root_entries: vec![], source_dir: root.0.clone() },
+            us: Lineup { root_entries: vec![], source_dir: root.0.clone() },
+        };
+        for name in ["Game.pce.m", "Neutopia_II_J.PCE.m", "Upper.PCE.M"] {
+            let packed = m2_mzs::pack_default(b"HuCard ROM", name).unwrap();
+            fs::write(root.0.join(name), &packed).unwrap();
+            let game = Game {
+                dir_name: name.into(), region_tag: name.into(),
+                data: GameJson { rom: GameRom { arch: "tg16".into(), rom: name.into(), ..Default::default() }, ..Default::default() },
+                sort: Default::default(), source_dir: root.0.clone(),
+            };
+            library.jp.root_entries.push(LineupEntry::Game(game));
+        }
+        let output = root.0.join("published");
+        let mut report = PublishReport::default();
+        pack_roms(&library, &output, &mut report).unwrap();
+        assert_eq!((report.roms_copied, report.roms_packed), (3, 0));
+        for game in iter_all_games(&library.jp) {
+            let original = fs::read(game.rom_path()).unwrap();
+            let output_name = format!("{}.m", &game.data.rom.rom[..game.data.rom.rom.len() - 2]);
+            assert_eq!(fs::read(output.join("roms").join(&output_name)).unwrap(), original);
+            let template = m2_psb::write(&m2_psb::Value::Object(indexmap::IndexMap::from([
+                ("root".into(), m2_psb::Value::Object(indexmap::IndexMap::from([
+                    ("m2epi".into(), m2_psb::Value::Object(indexmap::IndexMap::new())),
+                ]))),
+            ])), 4).unwrap();
+            let profile = title_prof::generate(&title_prof::GenInputs { template_psb: &template, games: &[game.clone()] }).unwrap();
+            let profile = m2_psb::read(&profile).unwrap().to_json();
+            let rom = profile["root"]["m2epi"]["version"][&game.region_tag]["rom"].as_str().unwrap();
+            assert_eq!(fs::read(output.join(format!("{rom}.m"))).unwrap(), original);
+        }
+        let mut raw = match &library.jp.root_entries[0] { LineupEntry::Game(g) => g.clone(), _ => unreachable!() };
+        raw.data.rom.rom = "Game.pce".into();
+        fs::write(root.0.join("Game.pce"), b"different raw ROM").unwrap();
+        library.jp.root_entries.push(LineupEntry::Game(raw));
+        let before = fs::read(output.join("roms/Game.pce.m")).unwrap();
+        assert!(pack_roms(&library, &output, &mut PublishReport::default()).unwrap_err().to_string().contains("collision"));
+        assert_eq!(fs::read(output.join("roms/Game.pce.m")).unwrap(), before);
+    }
+}
+
 fn pack_roms(library: &Library, output_root: &Path, report: &mut PublishReport) -> Result<(), Error> {
     let roms_out = output_root.join("roms");
     std::fs::create_dir_all(&roms_out)?;
@@ -116,32 +174,35 @@ fn pack_roms(library: &Library, output_root: &Path, report: &mut PublishReport) 
             let rom_filename = rom_src.file_name()
                 .ok_or_else(|| Error::Library("rom has no filename".into()))?
                 .to_string_lossy().to_string();
-            if let Some(prev) = seen.get(&rom_filename) {
+            let lower = rom_filename.to_ascii_lowercase();
+            let needs_packing = lower.ends_with(".pce") || lower.ends_with(".sgx");
+            let out_name = if needs_packing {
+                format!("{}.m", rom_filename)
+            } else if lower.ends_with(".pce.m") || lower.ends_with(".sgx.m") {
+                // The native loader appends lowercase .m. MZS keys are case-insensitive.
+                format!("{}.m", &rom_filename[..rom_filename.len() - 2])
+            } else {
+                rom_filename.clone()
+            };
+            // Raw foo.pce and packed foo.pce.m target the same published file.
+            if let Some(prev) = seen.get(&out_name) {
                 if !files_have_same_content(prev, &rom_src)? {
                     return Err(Error::Library(format!(
                         "ROM filename collision: '{}' used by both {} and {} with different contents",
-                        rom_filename, prev.display(), rom_src.display()
+                        out_name, prev.display(), rom_src.display()
                     )));
                 }
                 continue;
             }
-            seen.insert(rom_filename.clone(), rom_src.clone());
+            seen.insert(out_name.clone(), rom_src.clone());
 
-            let lower = rom_filename.to_lowercase();
-            if lower.ends_with(".pce") || lower.ends_with(".sgx") {
+            if needs_packing {
                 let raw = std::fs::read(&rom_src)?;
-                let out_name = format!("{}.m", rom_filename);
                 let m = m2_mzs::pack_default(&raw, &out_name)?;
                 std::fs::write(roms_out.join(&out_name), m)?;
                 report.roms_packed += 1;
-            } else if lower.ends_with(".pcd") || lower.ends_with(".cue") || lower.ends_with(".bin") {
-                let dst = roms_out.join(&rom_filename);
-                std::fs::copy(&rom_src, &dst).map_err(|e| {
-                    std::io::Error::new(e.kind(), format!("copy ROM {} -> {}: {}", rom_src.display(), dst.display(), e))
-                })?;
-                report.roms_copied += 1;
             } else {
-                let dst = roms_out.join(&rom_filename);
+                let dst = roms_out.join(&out_name);
                 std::fs::copy(&rom_src, &dst).map_err(|e| {
                     std::io::Error::new(e.kind(), format!("copy ROM {} -> {}: {}", rom_src.display(), dst.display(), e))
                 })?;

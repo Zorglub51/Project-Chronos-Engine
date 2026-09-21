@@ -1274,32 +1274,43 @@ function getForcedTitlebar() {
 
 function applyForcedTitlebar() {
     const forced = getForcedTitlebar();
-    const picker = document.getElementById('titlebar-picker');
     if (forced !== null) {
         const library = getLibrary();
         const entry = library.games[selectedIndex];
-        entry.game.display.titlebar = forced;
-        document.getElementById('f-titlebar').value = forced;
-        updateTitlebarSelection(forced);
-        picker.classList.add('disabled');
-    } else {
-        picker.classList.remove('disabled');
+        // Zero deliberately hides the banner, including in the US lineup.
+        if (entry.game.display.titlebar !== 0) {
+            entry.game.display.titlebar = forced;
+            document.getElementById('f-titlebar').value = forced;
+            updateTitlebarSelection(forced);
+        }
     }
+    document.querySelectorAll('.titlebar-option').forEach(opt => {
+        const value = Number(opt.dataset.titlebar);
+        opt.disabled = forced !== null && value !== 0 && value !== forced;
+    });
 }
 
 function initTitlebarPicker() {
     const container = document.getElementById('titlebar-picker');
-    for (let i = 1; i <= 12; i++) {
-        const opt = document.createElement('div');
+    for (let i = 0; i <= 12; i++) {
+        const opt = document.createElement('button');
+        opt.type = 'button';
         opt.className = 'titlebar-option';
         opt.dataset.titlebar = i;
-        opt.title = 'Titlebar ' + i;
-        const img = document.createElement('img');
-        img.src = 'titlebars/button_title_' + i + '.png';
-        img.alt = '' + i;
-        opt.appendChild(img);
+        opt.title = i === 0 ? 'No titlebar' : 'Titlebar ' + i;
+        opt.setAttribute('aria-label', opt.title);
+        if (i === 0) {
+            opt.classList.add('titlebar-none');
+            opt.textContent = 'No titlebar';
+        } else {
+            const img = document.createElement('img');
+            img.src = 'titlebars/button_title_' + i + '.png';
+            img.alt = '' + i;
+            opt.appendChild(img);
+        }
         opt.addEventListener('click', () => {
-            if (getForcedTitlebar() !== null) return;
+            const forced = getForcedTitlebar();
+            if (forced !== null && i !== 0 && i !== forced) return;
             const library = getLibrary();
             if (selectedIndex < 0 || !library) return;
             library.games[selectedIndex].game.display.titlebar = i;
@@ -1313,7 +1324,9 @@ function initTitlebarPicker() {
 
 function updateTitlebarSelection(val) {
     document.querySelectorAll('.titlebar-option').forEach(opt => {
-        opt.classList.toggle('selected', parseInt(opt.dataset.titlebar) === val);
+        const selected = Number(opt.dataset.titlebar) === val;
+        opt.classList.toggle('selected', selected);
+        opt.setAttribute('aria-pressed', String(selected));
     });
 }
 
@@ -1575,7 +1588,8 @@ async function pickRomFile() {
     try {
         const file = await dialogOpen({
             title: 'Select ROM file',
-            filters: [{ name: 'Games (CUE is converted to PCD)', extensions: ['pce', 'PCE', 'sgx', 'SGX', 'pcd', 'PCD', 'cue', 'CUE'] }]
+            // Native dialogs filter the final extension; import_rom validates .pce.m.
+            filters: [{ name: 'Games (PCE, PCE.M, SGX, CUE, PCD)', extensions: ['pce', 'PCE', 'm', 'M', 'sgx', 'SGX', 'pcd', 'PCD', 'cue', 'CUE'] }]
         });
         if (!file) return;
         await importRomFile(file, 'rom.rom', document.getElementById('f-rom'));
@@ -1627,9 +1641,10 @@ async function populateRomDatalist(entry) {
     try {
         const files = await invoke('list_files_in_folder', {
             folderPath,
-            extensions: ['pce', 'PCE', 'sgx', 'SGX', 'pcd', 'PCD']
+            extensions: ['pce', 'PCE', 'm', 'M', 'sgx', 'SGX', 'pcd', 'PCD']
         });
         for (const f of files) {
+            if (!/\.(pce(?:\.m)?|sgx|pcd)$/i.test(f)) continue;
             const opt = document.createElement('option');
             opt.value = f;
             datalist.appendChild(opt);
@@ -2202,7 +2217,7 @@ async function moveGame() {
             recomputeSortIndices(targetGames);
 
             // Apply forced titlebar if moving to US lineup
-            if (dest.lineup === 'us' && editorSettings.force_us_titlebar) {
+            if (dest.lineup === 'us' && editorSettings.force_us_titlebar && movedEntry.game.display.titlebar !== 0) {
                 const e = targetGames[targetGames.length - 1];
                 e.game.display.titlebar = (e.game.display.csize <= 1) ? 9 : 10;
             }

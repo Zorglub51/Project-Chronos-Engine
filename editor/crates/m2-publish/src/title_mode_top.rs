@@ -182,3 +182,34 @@ fn set(obj: &mut IndexMap<String, Value>, key: &str, value: Value) {
     obj.insert(key.into(), value);
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::library::{GameDisplay, GameJson};
+
+    #[test]
+    fn no_titlebar_survives_psb_export_in_both_languages_and_lineups() {
+        let dummy = Value::Object(IndexMap::from([
+            ("regionTag".into(), Value::String("DUMMY".into())),
+            ("titlebar".into(), Value::Int(4)),
+        ]));
+        let template = m2_psb::write(&Value::Object(IndexMap::from([
+            ("items".into(), Value::Array(vec![dummy; 200])),
+        ])), 4).unwrap();
+        let game = Game {
+            dir_name: "GAME043".into(), region_tag: "GAME043".into(),
+            data: GameJson { display: GameDisplay {
+                name: "Neutopia II".into(), titlebar: 0, ..Default::default()
+            }, ..Default::default() },
+            sort: Default::default(), source_dir: Default::default(),
+        };
+        for (lineup, slots) in [(LineupKind::Jp, [0, 100]), (LineupKind::Us, [50, 150])] {
+            let output = generate(&GenInputs { template_psb: &template, lineup, games: &[game.clone()] }).unwrap();
+            let json = m2_psb::read(&output).unwrap().to_json();
+            for slot in slots {
+                assert_eq!(json["items"][slot]["titlebar"], 0);
+                assert_eq!(json["items"][slot]["regionTag"], "GAME043");
+            }
+        }
+    }
+}

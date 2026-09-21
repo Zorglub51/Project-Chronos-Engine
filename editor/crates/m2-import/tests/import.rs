@@ -3,6 +3,59 @@ use pcd_core::PcdArchive;
 use std::{cell::RefCell, fs};
 
 #[test]
+fn packed_hucard_import_preserves_filename_and_bytes_without_bios() {
+    let temp = tempfile::Builder::new()
+        .prefix("HuCard é ")
+        .tempdir()
+        .unwrap();
+    let root = temp.path();
+    let raw: Vec<u8> = (0..8192).map(|i| (i % 251) as u8).collect();
+    for name in ["Game.pce.m", "Neutopia_II_J.PCE.m", "Upper.PCE.M"] {
+        let packed = m2_mzs::pack_default(&raw, name).unwrap();
+        let source = root.join(name);
+        fs::write(&source, &packed).unwrap();
+        let destination = root.join(name.replace('.', "_"));
+        let first = import_rom(&source, &destination, None, &|_| {}).unwrap();
+        assert!(!first.converted && !first.cd);
+        assert_eq!(first.filename, name);
+        assert_eq!(fs::read(destination.join(&first.filename)).unwrap(), packed);
+        let second = import_rom(&source, &destination, None, &|_| {}).unwrap();
+        assert_eq!(second.filename, name);
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
+        assert_eq!(fs::read(&source).unwrap(), packed);
+        let other = m2_mzs::pack_default(&vec![0x55; 8192], name).unwrap();
+        fs::write(&source, other).unwrap();
+        let err = import_rom(&source, &destination, None, &|_| {}).unwrap_err();
+        assert!(err.to_string().contains("original filename"));
+        assert_eq!(fs::read(destination.join(name)).unwrap(), packed);
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
+    }
+}
+
+#[test]
+fn invalid_packed_hucard_headers_leave_no_output() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let destination = root.join("game");
+    for (name, bytes) in [
+        ("invalid.pce.m", b"not MZS".to_vec()),
+        (
+            "empty.pce.m",
+            m2_mzs::pack_default(b"", "empty.pce.m").unwrap(),
+        ),
+        (
+            "other.psb.m",
+            m2_mzs::pack_default(b"PSB", "other.psb.m").unwrap(),
+        ),
+    ] {
+        let source = root.join(name);
+        fs::write(&source, bytes).unwrap();
+        assert!(import_rom(&source, &destination, None, &|_| {}).is_err());
+        assert!(!destination.exists());
+    }
+}
+
+#[test]
 fn cue_conversion_bios_extraction_and_direct_pcd_copy() {
     let temp = tempfile::Builder::new()
         .prefix("Chronos CD é ")

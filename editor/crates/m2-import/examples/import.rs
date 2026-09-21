@@ -15,7 +15,11 @@ fn main() -> Result<()> {
             let result=m2_import::import_rom(Path::new(&args[2]),Path::new(&args[3]),Some(&bios),&progress)?;
             println!("{}",serde_json::to_string_pretty(&result)?);
         },
-        _ => bail!("Usage: import library SOURCE DEST stock|empty BIOS_CACHE\n       import rom SOURCE DEST STOCK_PCD BIOS_CACHE"),
+        Some("rom") if args.len()==4 => {
+            let result=m2_import::import_rom(Path::new(&args[2]),Path::new(&args[3]),None,&progress)?;
+            println!("{}",serde_json::to_string_pretty(&result)?);
+        },
+        _ => bail!("Usage: import library SOURCE DEST stock|empty BIOS_CACHE\n       import rom SOURCE DEST [STOCK_PCD BIOS_CACHE]"),
     }
     Ok(())
 }

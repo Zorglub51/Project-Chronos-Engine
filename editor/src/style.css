@@ -611,6 +611,8 @@ button:hover, .btn:hover {
 }
 
 .titlebar-option {
+    background: transparent;
+    color: var(--text);
     cursor: pointer;
     border: 2px solid transparent;
     border-radius: 4px;
@@ -626,9 +628,14 @@ button:hover, .btn:hover {
     border-color: var(--accent);
 }
 
-.titlebar-picker.disabled {
+.titlebar-option:disabled {
     opacity: 0.4;
     pointer-events: none;
+}
+
+.titlebar-none {
+    min-height: 36px;
+    padding: 2px 12px;
 }
 
 .titlebar-option img {

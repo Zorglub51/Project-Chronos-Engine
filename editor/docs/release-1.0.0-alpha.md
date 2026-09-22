@@ -1,61 +1,60 @@
 # Project Chronos Engine 1.0 alpha
 
-Première préversion publique réunissant le firmware Chronos et l'éditeur de
-bibliothèques pour PC Engine Mini.
+The first public prerelease combining the Chronos firmware and the PC Engine
+Mini game library editor.
 
-## Téléchargements
+## Downloads
 
-| Fichier | Contenu |
+| File | Contents |
 |---|---|
-| `chronos-p6.zip` | Partition P6 : noyau personnalisé Linux 3.4.113. |
-| `chronos-p7.zip` | Partition P7 : système Chronos, démarrage USB et accès SSH/SFTP. |
-| `PCE-Game-Editor-1.0.0-alpha-windows-x64.zip` | Éditeur Windows x64 : exécutable direct et installateur. |
-| `PCE-Game-Editor-1.0.0-alpha-macos-arm64.zip` | Application `PCE Game Editor.app` pour Mac Apple Silicon. |
-| `SHA256SUMS.txt` | Empreintes de vérification des téléchargements. |
-| `manifest.json` | Provenance des images, commits et contrôles des applications. |
+| `chronos-p6.zip` | P6 partition: custom Linux 3.4.113 kernel. |
+| `chronos-p7.zip` | P7 partition: Chronos system, USB startup, and SSH/SFTP access. |
+| `PCE-Game-Editor-1.0.0-alpha-windows-x64.zip` | Windows x64 editor: executable and installer. |
+| `PCE-Game-Editor-1.0.0-alpha-macos-arm64.zip` | `PCE Game Editor.app` for Apple Silicon Macs. |
+| `SHA256SUMS.txt` | Checksums for verifying the downloads. |
+| `manifest.json` | Firmware provenance, source commits, and application validation results. |
 
-Les images P6/P7 sont les copies inchangées d'un dump frais de la console
-fonctionnelle, réalisé le 21 septembre 2026. La configuration du noyau et les
-instructions détaillées sont incluses dans les archives firmware.
+The P6/P7 images are unchanged copies of a fresh dump from the working console,
+captured on September 21, 2026. The kernel configuration and detailed
+instructions are included in the firmware archives.
 
-## Installation sur la console
+## Console installation
 
-1. Sauvegarder les partitions de la console avec PCE Mini Recovery.
-2. Passer la console en recovery, puis restaurer `chronos-p6.zip` sur **P6**
-   et `chronos-p7.zip` sur **P7**, en laissant terminer les vérifications.
-3. Conserver **P8 et P9** : ces partitions ne sont pas fournies par cette release.
-4. Préparer une clé FAT32 avec l'éditeur. Placer les dossiers `game/` et
-   `library/` publiés à la racine, puis redémarrer la console avec la clé.
+1. Back up the console partitions with PCE Mini Recovery.
+2. Put the console into recovery mode, restore `chronos-p6.zip` to **P6**
+   and `chronos-p7.zip` to **P7**, and let verification finish.
+3. Keep **P8 and P9**: these partitions are not included in this release.
+4. Prepare a FAT32 USB stick with the editor. Place the published `game/` and
+   `library/` folders at its root, then restart the console with the stick inserted.
 
-Le firmware a été validé sur PC Engine Mini JP / Allwinner A33. Les autres
-variantes de la console ne sont pas encore validées. SSH et SFTP sont activés
-sur **169.254.13.37:22**, utilisateur **root**, mot de passe vide. Les clés SSH
-propres à chaque console sont générées dans P8 ; les images ne contiennent pas
-de clé SSH privée.
+The firmware has been validated on PC Engine Mini JP / Allwinner A33. Other
+console variants have not yet been validated. SSH and SFTP are enabled at
+**169.254.13.37:22**, with username **root** and an empty password. Each console's
+SSH host keys are generated in P8; no private SSH keys are included in the images.
 
-## Éditeur
+## Editor
 
-- Créer une bibliothèque vide ou avec les jeux d'origine depuis un dump complet,
-  des partitions séparées ou un dossier P9 extrait.
-- Organiser les jeux en lineups JP/US et dossiers, modifier les jaquettes,
-  métadonnées et styles, puis publier la clé USB Chronos.
-- Importer les HuCards `.pce`, `.sgx` et `.pce.m`. Les `.pce.m` sont copiés sans
-  décompression, avec leur nom et leur contenu conservés.
-- Importer un `.pcd` directement ou convertir un `.cue` avec ses pistes en
-  `.pcd`, avec progression et configuration des BIOS dans les paramètres.
-- Consulter les sauvegardes et la SRAM associées aux jeux.
-- Choisir **No titlebar**, y compris côté US, comme pour Neutopia II JP.
+- Create an empty library or import the original games from a full dump,
+  separate partitions, or an extracted P9 directory.
+- Organize games into JP/US lineups and folders, edit covers, metadata, and
+  styles, then publish the Chronos USB stick.
+- Import `.pce`, `.sgx`, and `.pce.m` HuCards. Packed `.pce.m` files are copied
+  without decompression, preserving their names and contents.
+- Import a `.pcd` directly or convert a `.cue` and its tracks to `.pcd`, with
+  conversion progress and BIOS configuration in Settings.
+- View game save states and SRAM.
+- Choose **No titlebar**, including in the US lineup, as used by Neutopia II JP.
 
-**Windows :** décompresser le ZIP et lancer `pce-game-editor.exe`, ou utiliser
-l'installateur fourni. L'exécutable direct nécessite Microsoft WebView2 ;
-l'installateur le télécharge si nécessaire.
+**Windows:** extract the ZIP and run `pce-game-editor.exe`, or use the included
+installer. The standalone executable requires Microsoft WebView2; the installer
+downloads it if needed.
 
-**Mac Apple Silicon :** décompresser le ZIP et copier `PCE Game Editor.app`
-dans Applications. Cette archive contient uniquement l'architecture ARM64.
+**Apple Silicon Mac:** extract the ZIP and copy `PCE Game Editor.app` to
+Applications. This archive contains only the ARM64 build.
 
-Les éditeurs ne contiennent aucun jeu ni BIOS. La création d'une bibliothèque
-utilise le dump d'origine de l'utilisateur. Les applications ne disposent pas
-encore d'un certificat d'éditeur Windows ou d'une notarisation Apple.
+The editors include no games or BIOS files. Creating a library uses the user's
+own original console dump. The applications do not yet have a Windows publisher
+certificate or Apple notarization.
 
-Il s'agit d'une **version alpha**. Conserver les sauvegardes de la console et
-de la bibliothèque avant de tester. La version Linux n'est pas incluse.
+This is an **alpha release**. Keep backups of the console and library before
+testing. A Linux edition is not included.

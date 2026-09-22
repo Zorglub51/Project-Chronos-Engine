@@ -61,6 +61,7 @@ pub struct PublishReport {
 pub fn publish(opts: &PublishOptions) -> Result<PublishReport, Error> {
     let library = crate::library::load(&opts.library_root)?;
     let templates = Templates::new(&opts.stock_data_root);
+    let fonts = crate::fonts::prepare(&library, &opts.library_root, &opts.stock_data_root)?;
 
     let mut report = PublishReport::default();
     pack_roms(&library, &opts.output_root, &mut report)?;
@@ -78,6 +79,11 @@ pub fn publish(opts: &PublishOptions) -> Result<PublishReport, Error> {
     emit_data_008(&opts.library_root, &m2_root, &mut report)?;
 
     report.usb = crate::usb::prepare_usb(&opts.output_root)?;
+    crate::fonts::install(&fonts, &opts.output_root)?;
+    if let Some(usb) = &report.usb {
+        crate::fonts::install(&fonts, &usb.game_root)?;
+    }
+    report.psb_files_written += fonts.len();
 
     Ok(report)
 }

@@ -489,6 +489,71 @@ async function onSettingChange(key, value) {
     await saveEditorSettingsToBackend();
 }
 
+// ---- Console title preview ----
+let titlePreviewRevision = 0;
+let titlePreviewTimer;
+let titlePreviewLanguage = 'jp';
+
+async function initJapaneseFont() {
+    try {
+        const bytes = await invoke('japanese_font');
+        const font = new FontFace('Chronos Noto JP', bytes, {
+            weight: '500',
+            unicodeRange: 'U+3000-30FF,U+31F0-31FF,U+3400-9FFF,U+F900-FAFF,U+FF00-FFEF,U+20000-2FFFF'
+        });
+        await font.load();
+        document.fonts.add(font);
+    } catch (error) {
+        console.error('Cannot load bundled Japanese font:', error);
+        document.getElementById('title-preview-status').textContent = 'Japanese editor font could not be loaded: ' + error;
+    }
+}
+
+function queueTitlePreview() {
+    const revision = ++titlePreviewRevision;
+    clearTimeout(titlePreviewTimer);
+    const image = document.getElementById('title-preview-image');
+    const status = document.getElementById('title-preview-status');
+    if (!image || !status) return;
+    image.hidden = true;
+    status.textContent = 'Rendering console title…';
+    status.classList.remove('error');
+    titlePreviewTimer = setTimeout(async () => {
+        const entry = getLibrary()?.games[selectedIndex];
+        if (!entry || entry.is_folder) { status.textContent = ''; return; }
+        const display = entry.game.display;
+        // Menu language is independent of the selected JP/US lineup.
+        const english = titlePreviewLanguage === 'en';
+        const text = (english && display.name_eng) || display.tname || display.name || '';
+        try {
+            const result = await invoke('title_preview', {
+                gamesPath: dualLibrary.path, text, titlebar: Number(display.titlebar)
+            });
+            if (revision !== titlePreviewRevision) return;
+            image.src = result.image;
+            image.hidden = false;
+            status.textContent = '';
+        } catch (error) {
+            if (revision !== titlePreviewRevision) return;
+            status.textContent = 'Title preview unavailable: ' + error;
+            status.classList.add('error');
+        }
+    }, 150);
+}
+
+function initTitlePreview() {
+    initJapaneseFont();
+    const buttons = document.querySelectorAll('[data-preview-language]');
+    buttons.forEach(button => button.addEventListener('click', () => {
+        const language = button.dataset.previewLanguage;
+        if (language === titlePreviewLanguage) return;
+        titlePreviewLanguage = language;
+        buttons.forEach(option => option.setAttribute('aria-pressed',
+            String(option.dataset.previewLanguage === language)));
+        queueTitlePreview();
+    }));
+}
+
 // ---- Init ----
 document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('btn-open-folder').addEventListener('click', openFolder);
@@ -590,6 +655,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     initCcolorPicker();
     initTitlebarPicker();
+    initTitlePreview();
     setupImportUI();
     loadSettings();
 
@@ -799,8 +865,9 @@ function renderGameList() {
     const addFolderBtn = document.getElementById('btn-add-folder');
     if (currentFolder) {
         breadcrumb.style.display = '';
+        const folderEntry = currentFolder.parentGames.find(entry => entry.folder === currentFolder.name);
         document.getElementById('breadcrumb-folder-name').textContent =
-            currentFolder.name;
+            folderEntry?.game.display.name_eng || folderEntry?.game.display.name || 'Folder';
         addFolderBtn.style.display = 'none';
     } else {
         breadcrumb.style.display = 'none';
@@ -831,12 +898,12 @@ function renderGameList() {
         if (isFolder) {
             info.innerHTML = `
                 <div class="game-item-name">${escHtml(entry.game.display.name_eng || entry.game.display.name)}</div>
-                <div class="game-item-meta">Folder · ${entry.game_count} games</div>
+                <div class="game-item-meta">Folder · ${entry.game_count} ${entry.game_count === 1 ? 'game' : 'games'}</div>
             `;
         } else {
             info.innerHTML = `
                 <div class="game-item-name">${escHtml(entry.game.display.name_eng || entry.game.display.name)}</div>
-                <div class="game-item-meta">${entry.game.rom.arch} · ${entry.game.rom.country}</div>
+                <div class="game-item-meta">${entry.game.rom.arch}</div>
             `;
         }
 
@@ -985,7 +1052,7 @@ function selectFolder(index) {
     document.getElementById('folder-editor-title').textContent =
         entry.game.display.name_eng || entry.game.display.name;
     document.getElementById('folder-editor-subtitle').textContent =
-        entry.folder + ' \u00B7 ' + entry.game_count + ' games';
+        `${entry.game_count} ${entry.game_count === 1 ? 'game' : 'games'}`;
 
     // Display name field
     document.getElementById('f-folder-name').value =
@@ -1022,6 +1089,10 @@ async function enterSelectedFolder() {
 }
 
 // ---- Select game ----
+function gameEditorTitle(display) {
+    return [display.name_eng, display.name].filter(name => name && name.trim()).join(' / ');
+}
+
 function selectGame(index) {
     const library = getLibrary();
     selectedIndex = index;
@@ -1035,8 +1106,7 @@ function selectGame(index) {
 
     // Update header
     document.getElementById('editor-title').textContent =
-        entry.game.display.name_eng || entry.game.display.name;
-    document.getElementById('editor-subtitle').textContent = entry.folder;
+        gameEditorTitle(entry.game.display);
 
     const tags = document.getElementById('editor-tags');
     tags.innerHTML = `
@@ -1095,6 +1165,7 @@ function selectGame(index) {
 
 
     // Populate ROM datalist from game folder
+    queueTitlePreview();
     populateRomDatalist(entry);
 
     // Load save states
@@ -1149,7 +1220,7 @@ function onFieldChange(el) {
     // Update header live
     if (path === 'display.name_eng' || path === 'display.name') {
         const name = entry.game.display.name_eng || entry.game.display.name;
-        document.getElementById('editor-title').textContent = name;
+        document.getElementById('editor-title').textContent = gameEditorTitle(entry.game.display);
         const listItems = document.querySelectorAll('.game-item');
         if (listItems[selectedIndex]) {
             listItems[selectedIndex].querySelector('.game-item-name').textContent = name;
@@ -1169,6 +1240,7 @@ function onFieldChange(el) {
         updateTags(entry);
         applyForcedTitlebar();
     }
+    if (path.startsWith('display.')) queueTitlePreview();
 }
 
 // csize → rom.arch mapping
@@ -1280,54 +1352,121 @@ function applyForcedTitlebar() {
         // Zero deliberately hides the banner, including in the US lineup.
         if (entry.game.display.titlebar !== 0) {
             entry.game.display.titlebar = forced;
-            document.getElementById('f-titlebar').value = forced;
             updateTitlebarSelection(forced);
         }
     }
-    document.querySelectorAll('.titlebar-option').forEach(opt => {
+    for (const opt of document.querySelectorAll('.titlebar-option')) {
         const value = Number(opt.dataset.titlebar);
         opt.disabled = forced !== null && value !== 0 && value !== forced;
-    });
-}
-
-function initTitlebarPicker() {
-    const container = document.getElementById('titlebar-picker');
-    for (let i = 0; i <= 12; i++) {
-        const opt = document.createElement('button');
-        opt.type = 'button';
-        opt.className = 'titlebar-option';
-        opt.dataset.titlebar = i;
-        opt.title = i === 0 ? 'No titlebar' : 'Titlebar ' + i;
-        opt.setAttribute('aria-label', opt.title);
-        if (i === 0) {
-            opt.classList.add('titlebar-none');
-            opt.textContent = 'No titlebar';
-        } else {
-            const img = document.createElement('img');
-            img.src = 'titlebars/button_title_' + i + '.png';
-            img.alt = '' + i;
-            opt.appendChild(img);
-        }
-        opt.addEventListener('click', () => {
-            const forced = getForcedTitlebar();
-            if (forced !== null && i !== 0 && i !== forced) return;
-            const library = getLibrary();
-            if (selectedIndex < 0 || !library) return;
-            library.games[selectedIndex].game.display.titlebar = i;
-            document.getElementById('f-titlebar').value = i;
-            updateTitlebarSelection(i);
-            autoSave();
-        });
-        container.appendChild(opt);
     }
 }
 
-function updateTitlebarSelection(val) {
-    document.querySelectorAll('.titlebar-option').forEach(opt => {
-        const selected = Number(opt.dataset.titlebar) === val;
-        opt.classList.toggle('selected', selected);
-        opt.setAttribute('aria-pressed', String(selected));
+const TITLEBAR_LABELS = [
+        'White bar',
+        '1 · HuCARD — purple',
+        '2 · HuCARD — light blue',
+        '3 · HuCARD — red',
+        '4 · HuCARD — blue',
+        '5 · HuCARD — blue, striped',
+        '6 · HuCARD — purple, striped',
+        '7 · CD-ROM² System',
+        '8 · Super CD-ROM²',
+        '9 · TurboGrafx-16',
+        '10 · TurboGrafx-CD',
+        '11 · Arcade CD-ROM²',
+        '12 · Namcot',
+];
+
+function titlebarGraphic(value) {
+    if (value === 0) {
+        const bar = document.createElement('span');
+        bar.className = 'titlebar-white';
+        bar.setAttribute('aria-hidden', 'true');
+        return bar;
+    }
+    const image = document.createElement('img');
+    image.src = `titlebars/button_title_${value}.png`;
+    image.alt = '';
+    return image;
+}
+
+function chooseTitlebar(value) {
+        const library = getLibrary();
+        const entry = library?.games[selectedIndex];
+        if (!entry || entry.is_folder) return;
+        const forced = getForcedTitlebar();
+        if (forced !== null && value !== 0 && value !== forced) {
+            updateTitlebarSelection(entry.game.display.titlebar);
+            return;
+        }
+        entry.game.display.titlebar = value;
+        updateTitlebarSelection(value);
+        autoSave();
+        document.getElementById('titlebar-toggle').focus();
+}
+
+function initTitlebarPicker() {
+    const picker = document.getElementById('titlebar-picker');
+    const toggle = document.getElementById('titlebar-toggle');
+    const options = document.getElementById('titlebar-options');
+    TITLEBAR_LABELS.forEach((label, value) => {
+        const option = document.createElement('button');
+        option.type = 'button';
+        option.className = 'titlebar-option';
+        option.dataset.titlebar = String(value);
+        option.setAttribute('aria-label', label);
+        option.title = label;
+        option.appendChild(titlebarGraphic(value));
+        option.addEventListener('click', () => chooseTitlebar(value));
+        options.appendChild(option);
     });
+    picker.addEventListener('toggle', () => {
+        if (!picker.open) return;
+        const rect = toggle.getBoundingClientRect();
+        const bounds = document.getElementById('main-content').getBoundingClientRect();
+        const above = rect.top - bounds.top - 8;
+        const below = bounds.bottom - rect.bottom - 8;
+        const upwards = below < Math.min(320, above);
+        picker.classList.toggle('above', upwards);
+        options.style.maxHeight = `${Math.max(60, Math.min(320, upwards ? above : below))}px`;
+        const selected = options.querySelector('[aria-pressed="true"]');
+        selected?.focus({ preventScroll: true });
+        if (selected) options.scrollTop = selected.offsetTop - options.clientHeight / 2;
+    });
+    picker.addEventListener('keydown', event => {
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            picker.open = false;
+            toggle.focus();
+        } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+            event.preventDefault();
+            if (!picker.open) { picker.open = true; return; }
+            const enabled = [...options.querySelectorAll('button:not(:disabled)')];
+            let index = enabled.indexOf(document.activeElement);
+            if (event.key === 'Home') index = 0;
+            else if (event.key === 'End') index = enabled.length - 1;
+            else index = (index + (event.key === 'ArrowDown' ? 1 : -1) + enabled.length) % enabled.length;
+            enabled[index]?.focus();
+        }
+    });
+    document.addEventListener('click', event => {
+        if (!picker.contains(event.target)) picker.open = false;
+    });
+    picker.addEventListener('focusout', event => {
+        if (event.relatedTarget && !picker.contains(event.relatedTarget)) picker.open = false;
+    });
+}
+
+function updateTitlebarSelection(val) {
+    const value = Number(val);
+    document.getElementById('f-titlebar').value = String(value);
+    document.getElementById('titlebar-selected').replaceChildren(titlebarGraphic(value));
+    document.getElementById('titlebar-toggle').setAttribute('aria-label', `Titlebar: ${TITLEBAR_LABELS[value]}`);
+    document.getElementById('titlebar-picker').open = false;
+    for (const option of document.querySelectorAll('.titlebar-option')) {
+        option.setAttribute('aria-pressed', String(Number(option.dataset.titlebar) === value));
+    }
+    queueTitlePreview();
 }
 
 // ---- Cover ----

@@ -84,6 +84,15 @@ class PrepareTests(unittest.TestCase):
             self.prepare()
         self.assertEqual(b"keep", (self.destination / "valuable").read_bytes())
 
+    def test_published_fonts_override_stock_only_in_the_private_runtime(self):
+        name = "system/font/makoto_basefont_32pt.psb.m"
+        self.put(self.data / name, b"original font")
+        self.put(self.published / name, b"Noto with additional kanji")
+        before = self.snapshot_sources()
+        self.prepare()
+        self.assertEqual(before, self.snapshot_sources())
+        self.assertEqual(b"Noto with additional kanji", (self.destination / "game" / name).read_bytes())
+
     def test_dangling_destination_symlink_is_not_followed(self):
         target = self.base / "not-created"
         self.destination.symlink_to(target)

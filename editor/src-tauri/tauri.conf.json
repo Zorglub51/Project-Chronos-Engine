@@ -27,6 +27,9 @@
   "bundle": {
     "active": true,
     "targets": ["app"],
+    "resources": {
+      "../crates/m2-publish/fonts/OFL.txt": "licenses/NotoSansCJK-OFL.txt"
+    },
     "category": "DeveloperTool"
   }
 }

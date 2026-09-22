@@ -106,7 +106,7 @@ pub fn create_library(
     ] {
         fs::create_dir_all(path)?;
     }
-    for name in TEMPLATES {
+    for name in TEMPLATES.iter().chain(m2_publish::fonts::RESOURCES) {
         source.copy(name, &library.join("templates").join(name))?;
     }
     let mut warnings = Vec::new();

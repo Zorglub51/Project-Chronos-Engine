@@ -94,6 +94,14 @@ def prepare(args):
     for name in PATCHES:
         patch = REPO / "mod-assets/scripts-built" / name
         shutil.copy2(patch, game / "system/script" / patch.name)
+    # Published Japanese font atlases contain the library's additional kanji.
+    # Overlay only this known resource set; keep legacy exports usable.
+    for name in ("makoto_basefont.psb.m", "makoto_basefont_18pt.psb.m",
+                 "makoto_basefont_32pt.psb.m", "NotoSansCJK-OFL.txt"):
+        source = published / "system/font" / name
+        if source.is_file():
+            (game / "system/font").mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, game / "system/font" / name)
     (game / "save").mkdir(exist_ok=True)
     for lineup, pack, names in packs:
         dest = root / "published/folders" / lineup / pack.name

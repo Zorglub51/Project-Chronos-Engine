@@ -44,6 +44,11 @@ mod publish_pipeline;
 mod sync;
 mod templates;
 mod atlas;
+pub mod fonts;
+pub mod title_preview;
+pub fn decode_resource(bytes: &[u8], name: &str) -> Result<Vec<u8>, Error> {
+    Ok(m2_mzs::unpack_default(bytes, name)?)
+}
 mod title_mode_top;
 mod title_prof;
 mod title_select;

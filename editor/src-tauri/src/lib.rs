@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::Manager;
 mod import_commands;
+mod font_commands;
 
 // --- Data structures matching game.json schema ---
 
@@ -982,6 +983,10 @@ const REQUIRED_TEMPLATES: &[&str] = &[
     "040/config/title_mode_top.psb.m",
     "040/motion/title_jp_titleselect_jp.psb.m",
     "040/motion/title_jp_titleselect_us.psb.m",
+    "system/font/makoto_basefont.psb.m",
+    "system/font/makoto_basefont_18pt.psb.m",
+    "system/font/makoto_basefont_32pt.psb.m",
+    "system/motion/titleselect_ui.psb.m",
 ];
 
 /// Examine a wrapper folder and report whether init is needed and possible.
@@ -1140,6 +1145,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
+            font_commands::japanese_font,
+            font_commands::title_preview,
             load_library,
             save_library,
             get_cover,

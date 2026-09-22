@@ -185,12 +185,28 @@
                     </div>
                     <div class="editor-header-info">
                         <div class="editor-title" id="editor-title"></div>
-                        <div class="editor-subtitle" id="editor-subtitle"></div>
                         <div class="editor-tags" id="editor-tags"></div>
                     </div>
                     <div class="editor-header-actions">
                         <button class="btn-move-top" id="btn-move">Move to...</button>
                         <button class="btn-danger btn-delete-top" id="btn-delete">Delete this game</button>
+                    </div>
+                </div>
+
+                <!-- Console title preview -->
+                <div class="section open" data-section="title-preview">
+                    <div class="section-title">Console title preview</div>
+                    <div class="section-body">
+                        <div class="title-preview-controls">
+                            <div class="title-preview-language" role="group" aria-label="Preview language">
+                                <button type="button" data-preview-language="jp" aria-pressed="true">Japanese</button>
+                                <button type="button" data-preview-language="en" aria-pressed="false">English</button>
+                            </div>
+                        </div>
+                        <div id="title-preview-viewport">
+                            <img id="title-preview-image" width="1280" height="64" alt="Complete console title bar" hidden>
+                        </div>
+                        <p id="title-preview-status" role="status" aria-live="polite"></p>
                     </div>
                 </div>
 
@@ -226,11 +242,16 @@
                             </div>
                         </div>
                         <div class="field-row">
-                            <label class="field-label">Titlebar</label>
+                            <span class="field-label">Titlebar</span>
                             <div class="field-value">
-                                <div class="titlebar-picker" id="titlebar-picker">
-                                </div>
-                                <input type="hidden" id="f-titlebar" data-path="display.titlebar" value="4">
+                                <details id="titlebar-picker" class="titlebar-picker">
+                                    <summary id="titlebar-toggle" aria-label="Titlebar">
+                                        <span id="titlebar-selected"></span>
+                                        <span class="titlebar-arrow" aria-hidden="true">▾</span>
+                                    </summary>
+                                    <div id="titlebar-options" class="titlebar-options" aria-label="Titlebar styles"></div>
+                                </details>
+                                <input type="hidden" id="f-titlebar" value="4">
                             </div>
                         </div>
                         <div class="field-row">

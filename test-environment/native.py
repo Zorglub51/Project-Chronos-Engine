@@ -25,7 +25,7 @@ KEYS = {"up": (3, 17, -1), "down": (3, 17, 1), "left": (3, 16, -1),
         "right": (3, 16, 1), "z": (1, 306, 1), "x": (1, 305, 1),
         "run": (1, 313, 1), "select": (1, 312, 1)}
 SUPPORTED_BINARIES = {
-    "b02848f66b82f8ac3090db523c4db9633508f9e3f53c7dc0ee3d01ce8aee8792": "stock JP 1006JP",
+    "b02848f66b82f8ac3090db523c4db9633508f9e3f53c7dc0ee3d01ce8aee8792": "stock 1006JP / 1006WW",
     "200044b9b0491302a0cac7830e6dd6ec2289b8315a5866eee952222f1de37cfb": "legacy VM platform patch",
 }
 
@@ -52,15 +52,19 @@ def prepare(args):
     for source in (data, binary.parent, published, support):
         require(not root.resolve().is_relative_to(source), "Runtime must be outside input trees")
     digest = hashlib.sha256(binary.read_bytes()).hexdigest()
-    require(digest in SUPPORTED_BINARIES, f"Unsupported binary SHA-256: {digest}; hook addresses target JP 1006JP")
+    require(digest in SUPPORTED_BINARIES, f"Unsupported binary SHA-256: {digest}; hook addresses target retail 1006JP / 1006WW")
     require((data / "system/script/init.nut.m").is_file(), "Expected extracted stock resources, including init.nut.m")
     require((published / "folders/jp/_root/title_prof.psb.m").is_file(), "Missing published JP root pack")
+    version = (support / "version").read_text().strip()
+    require(version in ("1006JP", "1006WW"), f"Unsupported console version: {version}")
+    package, motion_prefix = ("040", "jp") if version == "1006JP" else ("041", "us")
+    require((data / package / "config/title_prof.psb.m").is_file(), f"Missing console {package} resources")
     packs = []
     for lineup in ("jp", "us"):
         for pack in sorted((published / "folders" / lineup).glob("*")):
             if not pack.is_dir():
                 continue
-            names = ("title_prof.psb.m", "title_mode_top.psb.m", f"title_jp_titleselect_{lineup}.psb.m")
+            names = ("title_prof.psb.m", "title_mode_top.psb.m", f"title_{motion_prefix}_titleselect_{lineup}.psb.m")
             for name in names:
                 require((pack / name).is_file(), f"Incomplete pack: {pack / name}")
             packs.append((lineup, pack, names))
@@ -111,7 +115,7 @@ def prepare(args):
     (root / "published/folders/.current").write_text("jp/_root\n")
     (root / MARKER).write_text(json.dumps({
         "binary_sha256": digest, "binary_variant": SUPPORTED_BINARIES[digest],
-        "data": str(data), "published": str(published), "fresh_saves": True,
+        "data": str(data), "published": str(published), "console_package": package, "fresh_saves": True,
     }, indent=2) + "\n")
     print(f"Prepared {root} ({len(packs)} packs, fresh test saves)")
 

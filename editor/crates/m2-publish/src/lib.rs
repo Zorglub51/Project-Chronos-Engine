@@ -34,7 +34,7 @@
 //         _root/ or <folder>/
 //           title_prof.psb.m
 //           title_mode_top.psb.m
-//           title_jp_titleselect_<lineup>.psb.m
+//           title_{jp|us}_titleselect_<lineup>.psb.m  (console-specific prefix)
 //           saves/                engine-format states and per-pack sram.bin
 //
 // Other output paths remain standalone exports (roms/, folders/, save/).
@@ -43,6 +43,7 @@ mod library;
 mod publish_pipeline;
 mod sync;
 mod templates;
+pub mod console;
 mod atlas;
 pub mod fonts;
 pub mod title_preview;

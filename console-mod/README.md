@@ -2,6 +2,10 @@
 
 Canonical scripts deployed on the console for the USB stick library workflow.
 
+The bundled hook supports both Japanese (`040`, `1006JP`) and international
+(`041`, `1006WW`) resources. See [console variants](../docs/CONSOLE-VARIANTS.md)
+for template detection and model-specific PSB filenames.
+
 ## Files in this directory
 
 | File | Console destination | Mode |

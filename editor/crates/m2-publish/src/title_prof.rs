@@ -23,8 +23,33 @@ pub struct GenInputs<'a> {
 pub fn generate(inputs: &GenInputs) -> Result<Vec<u8>, Error> {
     let mut tree = m2_psb::read(inputs.template_psb)?;
 
-    set_path(&mut tree, &["root", "m2epi", "version"], Value::Object(build_version_map(inputs.games)))?;
-    set_path(&mut tree, &["root", "game_versions"], Value::Object(build_game_versions_map(inputs.games)))?;
+    let mut versions = build_version_map(inputs.games);
+    let mut game_versions = build_game_versions_map(inputs.games);
+    // Native _02_game_regionTag has 15 bytes including its terminator.
+    // Navigation uses the full menu tag to locate a folder, but its emulator
+    // profile must have a short key for initialization and context reloads.
+    // Replace only long navigation keys, without adding or moving save slots.
+    let mut default_tag = inputs.games.first().map(|g| g.region_tag.clone());
+    for (index, game) in inputs.games.iter().enumerate() {
+        if game.data.rom.arch == "folder" && game.region_tag.len() > 14 {
+            let alias = format!("FOLDER_{index:03}");
+            if game_versions.contains_key(&alias) {
+                return Err(Error::Library(format!("{alias} is reserved for native folder initialization")));
+            }
+            let profile = versions.swap_remove(&game.region_tag).unwrap();
+            let version = game_versions.swap_remove(&game.region_tag).unwrap();
+            versions.insert(alias.clone(), profile);
+            game_versions.insert(alias.clone(), version);
+            if index == 0 { default_tag = Some(alias); }
+        }
+    }
+    if let Some(default) = default_tag {
+        let defaults = ["japan", "usa", "europe", "asia"].into_iter()
+            .map(|region| (region.into(), Value::String(default.clone()))).collect();
+        set_path(&mut tree, &["root", "game_versions_default"], Value::Object(defaults))?;
+    }
+    set_path(&mut tree, &["root", "m2epi", "version"], Value::Object(versions))?;
+    set_path(&mut tree, &["root", "game_versions"], Value::Object(game_versions))?;
 
     Ok(m2_psb::write(&tree, 4)?)
 }
@@ -145,6 +170,23 @@ mod tests {
         ])))]));
         let template = m2_psb::write(&tree, 4).unwrap();
         m2_psb::read(&generate(&GenInputs { template_psb: &template, games }).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn long_first_folder_tag_has_a_short_boot_alias_without_changing_slots() {
+        let tag = "FOLDER_jp_FOLDER_TEST";
+        let output = generated(&[game(tag, "folder"), game("GAME000", "tg16")]).to_json();
+        let root = &output["root"];
+        for region in ["japan", "usa", "europe", "asia"] {
+            assert_eq!(root["game_versions_default"][region], "FOLDER_000");
+        }
+        assert!(root["game_versions"].get(tag).is_none());
+        assert_eq!(root["m2epi"]["version"]["FOLDER_000"]["rom"], format!("roms/{tag}.pce"));
+        assert_eq!(root["game_versions"]["FOLDER_000"][0], 0);
+        assert_eq!(root["game_versions"]["GAME000"][0], 1);
+        let short = generated(&[game("FOLDER_jp_BACK", "folder")]).to_json();
+        assert_eq!(short["root"]["game_versions_default"]["japan"], "FOLDER_jp_BACK");
+        assert!(short["root"]["game_versions"].get("FOLDER_000").is_none());
     }
 
     #[test]

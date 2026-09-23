@@ -25,6 +25,15 @@ mod tests {
     use super::*;
     use std::io::Write;
     #[test]
+    fn partition_directory_accepts_raw_names_and_images() {
+        for name in ["mmcblk0p9", "P9", "mmcblk0p9.bin", "partition9.img", "partition_9.ext4"] {
+            assert!(p9_name(Path::new(name)), "{name}");
+        }
+        for name in ["mmcblk0p8", "notes.txt", "p9.zip", "p9.backup"] {
+            assert!(!p9_name(Path::new(name)), "{name}");
+        }
+    }
+    #[test]
     fn paths_and_partition_bounds_are_checked() {
         for path in ["../escape", "/absolute", "a/../b", "C:\\escape", "", "a\\b"] {
             assert!(safe_relative(path).is_err(), "{path}");
@@ -167,7 +176,7 @@ fn p9_name(path: &Path) -> bool {
         .to_string_lossy()
         .to_ascii_lowercase();
     ["mmcblk0p9", "p9", "partition9", "partition_9"].contains(&name.as_str())
-        && ["bin", "img", "ext4", "raw"].contains(&extension.as_str())
+        && ["", "bin", "img", "ext4", "raw"].contains(&extension.as_str())
 }
 
 impl Source {

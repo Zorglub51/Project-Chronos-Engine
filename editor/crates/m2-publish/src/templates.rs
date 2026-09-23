@@ -7,11 +7,14 @@ use std::path::{Path, PathBuf};
 
 pub struct Templates {
     pub stock_root: PathBuf,
+    pub console: crate::console::ConsoleVariant,
 }
 
 impl Templates {
-    pub fn new(stock_root: impl Into<PathBuf>) -> Self {
-        Self { stock_root: stock_root.into() }
+    pub fn new(stock_root: impl Into<PathBuf>) -> Result<Self, Error> {
+        let stock_root = stock_root.into();
+        let console = crate::console::ConsoleVariant::from_directory(&stock_root)?;
+        Ok(Self { stock_root, console })
     }
 
     /// Read and unpack a stock .psb.m file to its decoded PSB bytes.

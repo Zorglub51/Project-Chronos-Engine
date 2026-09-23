@@ -60,7 +60,17 @@ pub struct PublishReport {
 
 pub fn publish(opts: &PublishOptions) -> Result<PublishReport, Error> {
     let library = crate::library::load(&opts.library_root)?;
-    let templates = Templates::new(&opts.stock_data_root);
+    let templates = Templates::new(&opts.stock_data_root)?;
+    // Reject a different console runtime before changing published files.
+    if let Some(root) = crate::usb::usb_root(&opts.output_root) {
+        let game = root.join("game");
+        if game.join(crate::console::SYSTEM_PROFILE).is_file() {
+            let live = crate::console::ConsoleVariant::from_directory(&game)?;
+            if live != templates.console {
+                return Err(Error::Library(format!("Console resources ({}) do not match library templates ({}). Create the library from the matching console dump.", live.id(), templates.console.id())));
+            }
+        }
+    }
     let fonts = crate::fonts::prepare(&library, &opts.library_root, &opts.stock_data_root)?;
 
     let mut report = PublishReport::default();
@@ -78,7 +88,7 @@ pub fn publish(opts: &PublishOptions) -> Result<PublishReport, Error> {
     // (no per-library prefs / no SRAM for the active pack).
     emit_data_008(&opts.library_root, &m2_root, &mut report)?;
 
-    report.usb = crate::usb::prepare_usb(&opts.output_root)?;
+    report.usb = crate::usb::prepare_usb(&opts.output_root, templates.console)?;
     crate::fonts::install(&fonts, &opts.output_root)?;
     if let Some(usb) = &report.usb {
         crate::fonts::install(&fonts, &usb.game_root)?;
@@ -245,8 +255,9 @@ fn emit_lineup(
     m2_root: &Path,
     report: &mut PublishReport,
 ) -> Result<(), Error> {
-    let title_prof_template = templates.load_stock_psb("040/config/title_prof.psb.m")?;
-    let title_mode_top_template = templates.load_stock_psb("040/config/title_mode_top.psb.m")?;
+    let paths = templates.console.templates();
+    let title_prof_template = templates.load_stock_psb(paths[0])?;
+    let title_mode_top_template = templates.load_stock_psb(paths[1])?;
     let kind = match lineup_name {
         "jp" => LineupKind::Jp,
         "us" => LineupKind::Us,
@@ -257,15 +268,16 @@ fn emit_lineup(
     // rebuild from scratch, to preserve sg / soft31..33 / plus / thumb sections
     // that reference the stock atlases.
     let title_select_template_path = match kind {
-        LineupKind::Jp => "040/motion/title_jp_titleselect_jp.psb.m",
-        LineupKind::Us => "040/motion/title_jp_titleselect_us.psb.m",
+        LineupKind::Jp => paths[2],
+        LineupKind::Us => paths[3],
     };
     let title_select_template = templates.load_stock_psb(title_select_template_path)?;
+    let select_filename = Path::new(title_select_template_path).file_name().unwrap().to_str().unwrap();
 
     // _root pack: real games + folder cards (mixed in the order from gamelist.json)
     emit_root_pack(
         lineup_name, lineup, &title_prof_template, &title_mode_top_template,
-        &title_select_template, &kind,
+        &title_select_template, &kind, select_filename,
         m2_root, report,
     )?;
 
@@ -273,7 +285,7 @@ fn emit_lineup(
     for folder in lineup.folders() {
         emit_folder_pack(
             lineup_name, lineup, folder, &title_prof_template, &title_mode_top_template,
-            &title_select_template, &kind,
+            &title_select_template, &kind, select_filename,
             m2_root, report,
         )?;
     }
@@ -287,6 +299,7 @@ fn emit_root_pack(
     title_mode_top_template: &[u8],
     title_select_template: &[u8],
     lineup_kind: &LineupKind,
+    select_filename: &str,
     m2_root: &Path,
     report: &mut PublishReport,
 ) -> Result<(), Error> {
@@ -333,10 +346,6 @@ fn emit_root_pack(
         games: &select_inputs,
         template_psb: title_select_template,
     })?;
-    let select_filename = match lineup_kind {
-        LineupKind::Jp => "title_jp_titleselect_jp.psb.m",
-        LineupKind::Us => "title_jp_titleselect_us.psb.m",
-    };
     write_psb_m(&folder_dir.join(select_filename), &select_psb)?;
     report.psb_files_written += 1;
 
@@ -359,6 +368,7 @@ fn emit_folder_pack(
     title_mode_top_template: &[u8],
     title_select_template: &[u8],
     lineup_kind: &LineupKind,
+    select_filename: &str,
     m2_root: &Path,
     report: &mut PublishReport,
 ) -> Result<(), Error> {
@@ -400,10 +410,6 @@ fn emit_folder_pack(
         games: &select_inputs,
         template_psb: title_select_template,
     })?;
-    let select_filename = match lineup_kind {
-        LineupKind::Jp => "title_jp_titleselect_jp.psb.m",
-        LineupKind::Us => "title_jp_titleselect_us.psb.m",
-    };
     write_psb_m(&folder_dir.join(select_filename), &select_psb)?;
     report.psb_files_written += 1;
 
@@ -864,13 +870,48 @@ fn emit_data_008(
         buf[SRAM_OFFSET .. SRAM_OFFSET + n].copy_from_slice(&bytes[..n]);
     }
 
+    // Native autoload parses meta_008 as PSB before inspecting the data.
+    // An all-zero placeholder crashes the loader instead of being rebuilt.
+    let metadata = system_save_metadata(&buf)?;
     std::fs::write(&data_008_path, &buf)?;
-    // 400-byte meta_008 stub (engine expects it alongside data_008; we
-    // don't synthesise integrity contents — the engine rebuilds it on
-    // first write).
-    std::fs::write(&meta_008_path, vec![0u8; 400])?;
+    std::fs::write(&meta_008_path, metadata)?;
     report.data_008_emitted = true;
     Ok(())
+}
+
+fn system_save_metadata(data: &[u8]) -> Result<Vec<u8>, Error> {
+    use md5::{Digest, Md5};
+    use m2_psb::{Stream, Value};
+    let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default().as_secs() as i64;
+    let fields = indexmap::IndexMap::from([
+        ("CryptMagic".into(), Value::Int(0)),
+        ("Digest".into(), Value::Stream(Stream { index: 0, data: Md5::digest(data).to_vec() })),
+        ("FileSize".into(), Value::Int(data.len() as i64)),
+        ("FileVersion".into(), Value::Int(0x10200)),
+        ("OriginalSize".into(), Value::Int(data.len() as i64)),
+        ("TimeStamp".into(), Value::Int(timestamp)),
+    ]);
+    Ok(m2_psb::write(&Value::Object(fields), 3)?)
+}
+
+#[cfg(test)]
+mod system_save_tests {
+    use super::*;
+    #[test]
+    fn generated_metadata_is_native_psb_with_matching_size_and_digest() {
+        use md5::{Digest, Md5};
+        use m2_psb::Value;
+        let data = vec![0u8; DATA_008_SIZE];
+        let meta = system_save_metadata(&data).unwrap();
+        assert_eq!(&meta[..8], b"PSB\0\x03\0\0\0");
+        let Value::Object(fields) = m2_psb::read(&meta).unwrap() else { panic!("metadata object"); };
+        assert_eq!(fields["FileSize"], Value::Int(DATA_008_SIZE as i64));
+        assert_eq!(fields["OriginalSize"], fields["FileSize"]);
+        assert_eq!(fields["FileVersion"], Value::Int(0x10200));
+        let Value::Stream(digest) = &fields["Digest"] else { panic!("digest stream"); };
+        assert_eq!(digest.data, Md5::digest(&data).to_vec());
+    }
 }
 
 fn has_user_state(path: &Path) -> Result<bool, Error> {

@@ -1,4 +1,4 @@
-// Generate title_jp_titleselect_<lineup>.psb.m from the stock motion template.
+// Generate title_{jp|us}_titleselect_<lineup>.psb.m from the stock motion template.
 // Append each cover, then replace the front and sg image-indexed tracks.
 // sg supplies the SuperGrafx HuCard label during boot_sg and must follow the
 // same indices as front, including the leading BACK card in folders.
@@ -44,7 +44,8 @@ pub struct GenInputs<'a> {
     pub games: &'a [CoverEntry],
     /// Decoded PSB bytes of the stock template. For JP folder packs use
     /// `040/motion/title_jp_titleselect_jp.psb.m`; for US use
-    /// `040/motion/title_jp_titleselect_us.psb.m`. Other motions are preserved.
+    /// `040/motion/title_jp_titleselect_us.psb.m`. International consoles use
+    /// `041/motion/title_us_titleselect_{jp,us}.psb.m`. Other motions are preserved.
     /// Append covers and rebuild `front`/`sg`,
     /// then compact referenced stock sprites without changing their pixels.
     pub template_psb: &'a [u8],

@@ -1,7 +1,7 @@
 //! Files that accompany a published library on a FAT32 USB stick.
 //! Original M2 binaries/resources are supplied by the user, never bundled.
 
-use crate::Error;
+use crate::{console::ConsoleVariant, Error};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -36,10 +36,6 @@ const ORIGINAL_FILES: &[&str] = &[
     "shutdown.png",
     "system/script/init.nut.m",
     "system/config/system_prof.psb.m",
-    "040/config/title_prof.psb.m",
-    "040/config/title_mode_top.psb.m",
-    "040/motion/title_jp_titleselect_jp.psb.m",
-    "040/motion/title_jp_titleselect_us.psb.m",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,7 +69,7 @@ fn checked_directory(path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-pub fn prepare_usb(output: &Path) -> Result<Option<UsbPreparation>, Error> {
+pub fn prepare_usb(output: &Path, console: ConsoleVariant) -> Result<Option<UsbPreparation>, Error> {
     let Some(root) = usb_root(output) else {
         return Ok(None);
     };
@@ -113,7 +109,7 @@ pub fn prepare_usb(output: &Path) -> Result<Option<UsbPreparation>, Error> {
     // No symlinks and no ROM copies: the console mounts published/roms here.
     // Keep any legacy files and existing saves; never delete user content.
     let missing_original_files = ORIGINAL_FILES
-        .iter()
+        .iter().copied().chain(console.templates())
         .filter(|name| !game.join(name).is_file())
         .map(|name| format!("game/{name}"))
         .collect();
@@ -156,7 +152,7 @@ mod tests {
         fs::write(output.join("roms/test.pce.m"), b"published ROM").unwrap();
         fs::create_dir_all(tmp.0.join("game/save")).unwrap();
         fs::write(tmp.0.join("game/save/data_008_0000.bin"), b"user save").unwrap();
-        let first = prepare_usb(&output).unwrap().unwrap();
+        let first = prepare_usb(&output, ConsoleVariant::Japan).unwrap().unwrap();
         assert_eq!(first.assets_updated, 5);
         assert!(first
             .missing_original_files
@@ -170,7 +166,7 @@ mod tests {
         for (relative, bytes) in ASSETS {
             assert_eq!(fs::read(tmp.0.join("game").join(relative)).unwrap(), *bytes);
         }
-        let second = prepare_usb(&output).unwrap().unwrap();
+        let second = prepare_usb(&output, ConsoleVariant::Japan).unwrap().unwrap();
         assert_eq!(second.assets_updated, 0);
         assert_eq!(
             fs::read(output.join("roms/test.pce.m")).unwrap(),
@@ -183,7 +179,7 @@ mod tests {
         // A legacy ROM directory is preserved too; its files will be hidden
         // by the console mount, not removed by publication.
         fs::write(tmp.0.join("game/system/roms/old.pce.m"), b"old ROM").unwrap();
-        prepare_usb(&output).unwrap();
+        prepare_usb(&output, ConsoleVariant::Japan).unwrap();
         assert_eq!(
             fs::read(tmp.0.join("game/system/roms/old.pce.m")).unwrap(),
             b"old ROM"
@@ -191,9 +187,23 @@ mod tests {
     }
 
     #[test]
+    fn world_resources_are_complete_without_japanese_package_files() {
+        let tmp = Temp::new();
+        let game = tmp.0.join("game");
+        for name in ORIGINAL_FILES.iter().copied().chain(ConsoleVariant::World.templates()) {
+            let path = game.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"fixture").unwrap();
+        }
+        let result = prepare_usb(&tmp.0.join("library/published"), ConsoleVariant::World).unwrap().unwrap();
+        assert!(result.missing_original_files.is_empty());
+        assert!(!game.join("040").exists());
+    }
+
+    #[test]
     fn legacy_export_does_not_create_a_game_directory() {
         let tmp = Temp::new();
-        assert!(prepare_usb(&tmp.0.join("published")).unwrap().is_none());
+        assert!(prepare_usb(&tmp.0.join("published"), ConsoleVariant::Japan).unwrap().is_none());
         assert!(!tmp.0.join("game").exists());
     }
 
@@ -204,7 +214,7 @@ mod tests {
         let outside = Temp::new();
         fs::create_dir_all(tmp.0.join("game/system")).unwrap();
         std::os::unix::fs::symlink(&outside.0, tmp.0.join("game/system/roms")).unwrap();
-        assert!(prepare_usb(&tmp.0.join("library/published")).is_err());
+        assert!(prepare_usb(&tmp.0.join("library/published"), ConsoleVariant::Japan).is_err());
         assert_eq!(fs::read_dir(&outside.0).unwrap().count(), 0);
     }
 }

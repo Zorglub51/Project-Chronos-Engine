@@ -78,6 +78,21 @@ class PrepareTests(unittest.TestCase):
         self.assertEqual(before, self.snapshot_sources())
         self.assertEqual(self.destination.resolve(), native.runtime(self.destination))
 
+    def test_world_console_uses_041_and_us_motion_prefix(self):
+        (self.support / "version").write_bytes(b"1006WW")
+        (self.data / "040").rename(self.data / "041")
+        (self.pack / "title_jp_titleselect_jp.psb.m").rename(self.pack / "title_us_titleselect_jp.psb.m")
+        self.prepare()
+        self.assertTrue((self.destination / "game/041/config/title_prof.psb.m").is_file())
+        self.assertTrue((self.destination / "published/folders/jp/_root/title_us_titleselect_jp.psb.m").is_file())
+        self.assertFalse((self.destination / "game/040").exists())
+
+    def test_mixed_console_resources_are_rejected(self):
+        (self.support / "version").write_bytes(b"1006WW")
+        with self.assertRaisesRegex(RuntimeError, "Missing console 041"):
+            self.prepare()
+        self.assertFalse(self.destination.exists())
+
     def test_existing_directory_is_not_overwritten(self):
         self.put(self.destination / "valuable", b"keep")
         with self.assertRaisesRegex(RuntimeError, "already exists"):

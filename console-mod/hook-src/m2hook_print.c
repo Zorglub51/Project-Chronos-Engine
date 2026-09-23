@@ -145,7 +145,9 @@ static sq_getstring_t     p_sq_getstring     = (sq_getstring_t)    (0x87eb8 | 1)
  * (app partition). Atomic rename() requires same FS, so we copy
  * src→<live>.tmp on the live FS, fsync, rename. */
 #define FOLDERS_ROOT "/mnt/usb/library/published/folders"
-#define LIVE_DIR     "/usr/game/040"
+#include "console_layout.h"
+static const struct console_layout *g_console_layout;
+#define LIVE_DIR (g_console_layout->live_directory)
 /* Engine writes save states here (symlink to /rootfs_data/). data_011 = CD
  * (EMU_STATE_L), data_012 = HuCard (EMU_STATE). data_008 (SRAM +
  * BACKUP_FLAGS) lives here too. SRAM is per-pack-spliced via the SRAM_*
@@ -169,7 +171,7 @@ static sq_getstring_t     p_sq_getstring     = (sq_getstring_t)    (0x87eb8 | 1)
 #define CURRENT_FILE FOLDERS_ROOT "/.current"
 
 /* Each entry: src basename in FOLDERS_ROOT/<lineup>/<dir>/, dst rel under
- * /usr/game/040/. */
+ * /usr/game/040/ or /usr/game/041/. */
 struct swap_file {
     const char *src_basename;
     const char *dst_rel;
@@ -182,7 +184,7 @@ static const struct swap_file FOLDER_SWAP_FILES[] = {
 };
 /* Per-lineup motion sheet basename pattern: %s = "jp" or "us".
  * jp packs ship title_jp_titleselect_jp.psb.m, us packs ship _us. */
-#define MOTION_SHEET_FMT "title_jp_titleselect_%s.psb.m"
+#define MOTION_SHEET_FMT (g_console_layout->motion_format)
 
 /* Copy src→dst, fsync dst, close. Returns 0 on success. */
 /* ---- File-level bind-mounts (replaces copy-on-swap) ----
@@ -691,7 +693,7 @@ static int do_folder_swap(const char *lineup, const char *dir)
     }
 
     /* Phase 2: bind-mount the incoming pack's PSBs over the live ones.
-     * Sub-ms per file. The other PSBs in /usr/game/040/{config,motion}
+     * Sub-ms per file. The other PSBs in the selected package {config,motion}
      * (mode_logo, mode_staff, bg01, emu_screen, etc.) stay on NAND
      * unaltered. */
     {
@@ -1307,9 +1309,14 @@ static void m2hook_init(void)
     }
 
 #if ENABLE_FOLDER_HOOK
-    trace_event("startup executable=%s", exe);
+    g_console_layout = console_layout_detect("/usr/game");
+    if (!g_console_layout) {
+        fprintf(stderr, "[m2hook] Unsupported or incomplete console resources; folder hook disabled\n");
+        return;
+    }
+    trace_event("startup executable=%s console=%s", exe, g_console_layout->directory);
     trace_mounts("before startup binds");
-    /* Bind-mount the active pack's PSBs over /usr/game/040 BEFORE the
+    /* Bind-mount the active pack's PSBs over the selected package BEFORE the
      * engine reads them. parse_current gives us "<lineup>/<dir>"; if the
      * pack exists on disk, bind its three PSBs (title_mode_top, title_prof,
      * title_jp_titleselect_<lineup>) over the live paths. State files are

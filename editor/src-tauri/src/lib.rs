@@ -978,16 +978,15 @@ pub struct LibraryStatus {
     pub missing_templates: Vec<String>,
 }
 
-const REQUIRED_TEMPLATES: &[&str] = &[
-    "040/config/title_prof.psb.m",
-    "040/config/title_mode_top.psb.m",
-    "040/motion/title_jp_titleselect_jp.psb.m",
-    "040/motion/title_jp_titleselect_us.psb.m",
-    "system/font/makoto_basefont.psb.m",
-    "system/font/makoto_basefont_18pt.psb.m",
-    "system/font/makoto_basefont_32pt.psb.m",
-    "system/motion/titleselect_ui.psb.m",
-];
+fn required_templates(root: &Path) -> Result<Vec<&'static str>, String> {
+    let console = m2_publish::console::ConsoleVariant::from_directory(root).map_err(|e| e.to_string())?;
+    let mut paths = console.templates().to_vec();
+    paths.extend_from_slice(m2_publish::fonts::RESOURCES);
+    if root.join(m2_publish::console::SYSTEM_PROFILE).is_file() {
+        paths.push(m2_publish::console::SYSTEM_PROFILE);
+    }
+    Ok(paths)
+}
 
 /// Examine a wrapper folder and report whether init is needed and possible.
 /// Called from the frontend on app launch to decide between "load existing"
@@ -1001,10 +1000,11 @@ fn check_library_status(usb_root: String) -> Result<LibraryStatus, String> {
     let has_backup = backup_game.is_dir();
     let mut missing = Vec::new();
     if has_backup {
-        for rel in REQUIRED_TEMPLATES {
-            if !backup_game.join(rel).is_file() {
-                missing.push((*rel).to_string());
-            }
+        match required_templates(&backup_game) {
+            Ok(paths) => for rel in paths {
+                if !backup_game.join(rel).is_file() { missing.push(rel.to_string()); }
+            },
+            Err(error) => missing.push(error),
         }
     }
     Ok(LibraryStatus { has_library, has_backup, missing_templates: missing })
@@ -1028,7 +1028,8 @@ fn init_library(usb_root: String) -> Result<InitResult, String> {
         return Err(format!("BACKUP/game/ not found under {}", usb_root));
     }
     // Verify templates exist before doing anything.
-    for rel in REQUIRED_TEMPLATES {
+    let templates = required_templates(&backup_game)?;
+    for rel in &templates {
         if !backup_game.join(rel).is_file() {
             return Err(format!("required template missing: BACKUP/game/{}", rel));
         }
@@ -1058,7 +1059,7 @@ fn init_library(usb_root: String) -> Result<InitResult, String> {
     // publisher's existing template lookup (relative_path under stock_data_root)
     // works unchanged.
     let mut copied = 0;
-    for rel in REQUIRED_TEMPLATES {
+    for rel in templates {
         let src = backup_game.join(rel);
         let dst = templates_root.join(rel);
         if let Some(parent) = dst.parent() {

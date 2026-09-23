@@ -10,12 +10,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::{fs, path::Path};
 
-const TEMPLATES: &[&str] = &[
-    "040/config/title_prof.psb.m",
-    "040/config/title_mode_top.psb.m",
-    "040/motion/title_jp_titleselect_jp.psb.m",
-    "040/motion/title_jp_titleselect_us.psb.m",
-];
+use m2_publish::console::{ConsoleVariant, SYSTEM_PROFILE};
 
 #[derive(Debug, Serialize)]
 pub struct NewLibraryResult {
@@ -56,8 +51,12 @@ pub fn create_library(
     ensure!(parent.is_dir(), "Destination parent does not exist");
     report(progress, "Reading console dump…", None);
     let source = Source::open(input)?;
+    let identity = source.read(SYSTEM_PROFILE, 1024 * 1024)
+        .context("Original system profile missing from the console dump")?;
+    let console = ConsoleVariant::detect(Some(&identity), |name| source.size(name).is_some())?;
+    let templates = console.templates();
     // Check the full set up front, before a destination is visible.
-    for name in TEMPLATES.iter().copied().chain([
+    for name in templates.iter().copied().chain([
         "m2engage",
         "libopus.so.0",
         "version",
@@ -106,7 +105,7 @@ pub fn create_library(
     ] {
         fs::create_dir_all(path)?;
     }
-    for name in TEMPLATES.iter().chain(m2_publish::fonts::RESOURCES) {
+    for name in templates.iter().copied().chain(m2_publish::fonts::RESOURCES.iter().copied()).chain([SYSTEM_PROFILE]) {
         source.copy(name, &library.join("templates").join(name))?;
     }
     let mut warnings = Vec::new();
@@ -138,7 +137,7 @@ pub fn create_library(
     }
     let mut games = 0;
     if include_games {
-        games = extract_games(&source, &library, progress)?;
+        games = extract_games(&source, &library, &templates, progress)?;
     } else {
         for lineup in ["jp", "us"] {
             fs::create_dir_all(library.join(lineup))?;
@@ -157,7 +156,7 @@ pub fn create_library(
     fs::write(
         root.join("source.json"),
         serde_json::to_vec_pretty(
-            &json!({"source":input,"include_original_games":include_games,"games":games,"warnings":warnings}),
+            &json!({"source":input,"console_package":console.id(),"include_original_games":include_games,"games":games,"warnings":warnings}),
         )?,
     )?;
     ensure!(
@@ -174,8 +173,8 @@ pub fn create_library(
     })
 }
 
-fn extract_games(source: &Source, library: &Path, progress: Reporter<'_>) -> Result<usize> {
-    let menu = psb(source, TEMPLATES[1])?.to_json();
+fn extract_games(source: &Source, library: &Path, templates: &[&str; 4], progress: Reporter<'_>) -> Result<usize> {
+    let menu = psb(source, templates[1])?.to_json();
     let items = menu
         .get("items")
         .or_else(|| menu.get("root").and_then(|r| r.get("items")))
@@ -185,13 +184,13 @@ fn extract_games(source: &Source, library: &Path, progress: Reporter<'_>) -> Res
         items.len() >= 200,
         "Unsupported original menu: expected the JP/US lineups"
     );
-    let profiles = psb(source, TEMPLATES[0])?.to_json();
+    let profiles = psb(source, templates[0])?.to_json();
     let versions = profiles
         .pointer("/root/m2epi/version")
         .and_then(Value::as_object)
         .context("Original ROM profiles not found")?;
     let mut count = 0;
-    for (lineup, start, motion) in [("jp", 0, TEMPLATES[2]), ("us", 50, TEMPLATES[3])] {
+    for (lineup, start, motion) in [("jp", 0, templates[2]), ("us", 50, templates[3])] {
         let covers = psb(source, motion)?;
         let dir = library.join(lineup);
         fs::create_dir_all(&dir)?;

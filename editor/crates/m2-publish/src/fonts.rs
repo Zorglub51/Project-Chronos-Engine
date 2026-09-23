@@ -12,7 +12,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const FONT_BYTES: &[u8] = include_bytes!("../fonts/NotoSansCJKjp-Medium.otf");
+// Share one font allocation across the publisher and the desktop frontend.
+// A const can embed the full font again in each consuming crate.
+pub static FONT_BYTES: &[u8] = include_bytes!("../fonts/NotoSansCJKjp-Medium.otf");
 pub const FONT_LICENSE: &str = include_str!("../fonts/OFL.txt");
 pub const RESOURCES: &[&str] = &[
     "system/font/makoto_basefont.psb.m",

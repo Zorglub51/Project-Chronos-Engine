@@ -40,18 +40,23 @@ for ((attempt=0; attempt<45; attempt++)); do
 from PIL import Image, ImageOps
 import sys
 image = ImageOps.grayscale(Image.open(sys.argv[1]))
-image = image.point(lambda pixel: 0 if pixel >= 160 else 255)
+image = image.point(lambda pixel: 0 if pixel >= 140 else 255)
 image.resize((image.width * 3, image.height * 3)).save(sys.argv[2])
 PY
         tesseract "$output/welcome-ocr.png" "$output/welcome" --psm 6 2>/dev/null
-        if grep -qi 'New library from a console dump' "$output/welcome.txt"; then
+        if grep -qi 'New library from a console dump' "$output/welcome.txt" &&
+           grep -qi 'Open an existing library' "$output/welcome.txt"; then
             break
         fi
     fi
     sleep 1
 done
-grep -qi 'New library from a console dump' "$output/welcome.txt"
-grep -qi 'Open an existing library' "$output/welcome.txt"
+if ! grep -qi 'New library from a console dump' "$output/welcome.txt" ||
+   ! grep -qi 'Open an existing library' "$output/welcome.txt"; then
+    cat "$output/application.log" "$output/welcome.txt" >&2
+    echo 'The installed editor did not render both library actions.' >&2
+    exit 1
+fi
 xdotool getwindowgeometry --shell "$window" > "$output/window.txt"
 kill -0 "$app"
 echo 'Installed editor rendered the new/open library screen successfully.'

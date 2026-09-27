@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=PCE Game Editor
+Comment=Build and publish a Project Chronos Engine game library
+Exec=pce-game-editor
+Icon=com.pce.game-editor
+Terminal=false
+Categories=Game;Utility;
+StartupWMClass=pce-game-editor

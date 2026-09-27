@@ -1,0 +1,26 @@
+pkgname=pce-game-editor
+pkgver=1.0.0alpha
+pkgrel=1
+pkgdesc='Project Chronos Engine library editor for PC Engine Mini'
+arch=('x86_64')
+url='https://github.com/Zorglub51/Project-Chronos-Engine'
+license=('GPL-3.0-or-later' 'OFL-1.1')
+depends=('glibc' 'gcc-libs' 'gtk3' 'webkit2gtk-4.1' 'openssl' 'librsvg' 'xdotool' 'hicolor-icon-theme' 'ttf-dejavu')
+options=('!strip' '!debug')
+source=('pce-game-editor' 'com.pce.game-editor.desktop' 'com.pce.game-editor.png'
+        'LICENSE.txt' 'NotoSansCJK-OFL.txt' 'README.md' 'BUILD-INFO.txt')
+# package.sh stages these local build products and appends their SHA-256 hashes.
+
+package() {
+    install -Dm755 "$srcdir/pce-game-editor" "$pkgdir/usr/bin/pce-game-editor"
+    install -Dm644 "$srcdir/com.pce.game-editor.desktop" \
+        "$pkgdir/usr/share/applications/com.pce.game-editor.desktop"
+    install -Dm644 "$srcdir/com.pce.game-editor.png" \
+        "$pkgdir/usr/share/icons/hicolor/256x256/apps/com.pce.game-editor.png"
+    for file in LICENSE.txt NotoSansCJK-OFL.txt; do
+        install -Dm644 "$srcdir/$file" "$pkgdir/usr/share/licenses/$pkgname/$file"
+    done
+    for file in README.md BUILD-INFO.txt; do
+        install -Dm644 "$srcdir/$file" "$pkgdir/usr/share/doc/$pkgname/$file"
+    done
+}

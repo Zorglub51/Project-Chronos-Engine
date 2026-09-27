@@ -11,8 +11,8 @@ mkdir -p -- "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
 export GDK_BACKEND=x11
 export LIBGL_ALWAYS_SOFTWARE=1
-# Xvfb has no DMA-BUF renderer. Do not set this in the shipped launcher.
-export WEBKIT_DISABLE_DMABUF_RENDERER=1
+# Exercise the application's own Linux renderer default, not a test-only fix.
+unset WEBKIT_DISABLE_DMABUF_RENDERER
 
 ldd /usr/bin/pce-game-editor > "$output/ldd.txt"
 if grep -q 'not found' "$output/ldd.txt"; then

@@ -6,13 +6,13 @@ Japanese font. Games, BIOS files, and original console resources are not bundled
 
 ## Install and launch
 
-Download `pce-game-editor-1.0.0alpha-1-x86_64.pkg.tar.zst` from the
+Download `pce-game-editor-1.0.0alpha-2-x86_64.pkg.tar.zst` from the
 [GitHub releases](https://github.com/Zorglub51/Project-Chronos-Engine/releases).
 From the download directory, update Arch and install the local package:
 
 ```sh
 sudo pacman -Syu
-sudo pacman -U ./pce-game-editor-1.0.0alpha-1-x86_64.pkg.tar.zst
+sudo pacman -U ./pce-game-editor-1.0.0alpha-2-x86_64.pkg.tar.zst
 ```
 
 Pacman resolves the declared dependencies from Arch's repositories, including
@@ -35,6 +35,25 @@ sudo pacman -R pce-game-editor
 ```
 
 This does not remove your libraries or user settings.
+
+## Graphics compatibility
+
+Package revision 2 selects WebKitGTK's non-DMA-BUF renderer by default on Linux.
+This works around `Failed to create GBM buffer ... Invalid argument` and blank
+windows reported with some graphics drivers. It applies both to terminal and
+application-menu launches, without changing your display session or system-wide
+graphics configuration. The WebKit sandbox remains enabled in normal use.
+
+For revision 1, the equivalent temporary workaround is:
+
+```sh
+WEBKIT_DISABLE_DMABUF_RENDERER=1 pce-game-editor
+```
+
+An explicit environment setting is preserved. To opt back into the DMA-BUF
+renderer on a compatible driver, launch with
+`WEBKIT_DISABLE_DMABUF_RENDERER=0 pce-game-editor`.
+See the [upstream WebKit report](https://bugs.webkit.org/show_bug.cgi?id=280210).
 
 ## Build and package
 
@@ -69,7 +88,9 @@ The workflow runs converter, publisher/importer and frontend tests, then install
 the package in a separate Arch container without Rust, Node.js or build tools.
 It checks dynamic library resolution and renders the installed application's
 welcome screen under Xvfb. The screenshot and application log accompany the
-CI artifacts. This headless X11 check does not validate every desktop compositor
+CI artifacts. The renderer setting is unset by the test so the installed
+application's own default is exercised. This headless X11 check does not
+validate every desktop compositor
 or a physical USB stick. Any WebKit sandbox override used by the isolated CI
 test is confined to that test; none is installed with the application.
 

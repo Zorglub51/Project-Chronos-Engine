@@ -32,8 +32,18 @@ for ((attempt=0; attempt<45; attempt++)); do
     fi
     window=$(xdotool search --onlyvisible --name '^PCE Game Editor$' 2>/dev/null | head -1 || true)
     if [[ -n $window ]]; then
+        xdotool mousemove 0 0
         maim -i "$window" "$output/welcome.png"
-        tesseract "$output/welcome.png" "$output/welcome" 2>/dev/null
+        # OCR otherwise drops white text on the colored buttons. Keep the
+        # original screenshot as evidence and normalize a separate OCR input.
+        python3 - "$output/welcome.png" "$output/welcome-ocr.png" <<'PY'
+from PIL import Image, ImageOps
+import sys
+image = ImageOps.grayscale(Image.open(sys.argv[1]))
+image = image.point(lambda pixel: 0 if pixel >= 160 else 255)
+image.resize((image.width * 3, image.height * 3)).save(sys.argv[2])
+PY
+        tesseract "$output/welcome-ocr.png" "$output/welcome" --psm 6 2>/dev/null
         if grep -qi 'New library from a console dump' "$output/welcome.txt"; then
             break
         fi

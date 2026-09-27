@@ -760,8 +760,6 @@ fn move_game(
 pub struct EditorSettings {
     #[serde(default = "default_true")]
     pub confirm_delete: bool,
-    #[serde(default = "default_true")]
-    pub force_us_titlebar: bool,
     #[serde(default)]
     pub games_path: Option<String>,
     #[serde(default)]
@@ -774,7 +772,6 @@ impl Default for EditorSettings {
     fn default() -> Self {
         EditorSettings {
             confirm_delete: true,
-            force_us_titlebar: true,
             games_path: None,
             bios: None,
         }
@@ -850,7 +847,6 @@ fn load_editor_settings(app: tauri::AppHandle) -> Result<EditorSettings, String>
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
             let settings = EditorSettings {
                 confirm_delete: v.get("confirm_delete").and_then(|v| v.as_bool()).unwrap_or(true),
-                force_us_titlebar: v.get("force_us_titlebar").and_then(|v| v.as_bool()).unwrap_or(true),
                 games_path: v.get("games_path").and_then(|v| v.as_str()).map(String::from),
                 bios: None,
             };

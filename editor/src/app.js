@@ -9,7 +9,7 @@ let saveTimeout = null; // debounce timer for auto-save
 let saveInFlight = Promise.resolve();
 let coverCache = {};       // "lineup/folder" -> base64 data URL
 let currentFolder = null;  // null or { lineup, name, parentGames }
-let editorSettings = { confirm_delete: true, force_us_titlebar: true, games_path: null };
+let editorSettings = { confirm_delete: true, games_path: null };
 let gamesSettings = { genres: [], alpha_exclusions: [] };
 let genreNames = ['\u2014']; // index 0 = unset, rest populated from settings
 
@@ -110,7 +110,6 @@ async function loadSettings() {
     try {
         editorSettings = await invoke('load_editor_settings');
         document.getElementById('s-confirm-delete').checked = editorSettings.confirm_delete;
-        document.getElementById('s-force-us-titlebar').checked = editorSettings.force_us_titlebar;
         await refreshBiosSettings();
         let root = editorSettings.games_path;
         try {
@@ -515,12 +514,13 @@ function queueTitlePreview() {
     const image = document.getElementById('title-preview-image');
     const status = document.getElementById('title-preview-status');
     if (!image || !status) return;
-    image.hidden = true;
-    status.textContent = 'Rendering console title…';
+    // Keep the last decoded image on screen throughout typing and rendering.
+    status.textContent = '';
+    status.title = '';
     status.classList.remove('error');
     titlePreviewTimer = setTimeout(async () => {
         const entry = getLibrary()?.games[selectedIndex];
-        if (!entry || entry.is_folder) { status.textContent = ''; return; }
+        if (!entry || entry.is_folder) { image.hidden = true; return; }
         const display = entry.game.display;
         // Menu language is independent of the selected JP/US lineup.
         const english = titlePreviewLanguage === 'en';
@@ -530,12 +530,19 @@ function queueTitlePreview() {
                 gamesPath: dualLibrary.path, text, titlebar: Number(display.titlebar)
             });
             if (revision !== titlePreviewRevision) return;
-            image.src = result.image;
-            image.hidden = false;
-            status.textContent = '';
+            // Decode off-screen, then replace in one operation: changing the
+            // visible image's src can leave a blank frame in WebKit.
+            const next = image.cloneNode();
+            next.src = result.image;
+            next.hidden = false;
+            await next.decode();
+            if (revision !== titlePreviewRevision) return;
+            image.replaceWith(next);
         } catch (error) {
             if (revision !== titlePreviewRevision) return;
+            image.hidden = true;
             status.textContent = 'Title preview unavailable: ' + error;
+            status.title = status.textContent;
             status.classList.add('error');
         }
     }, 150);
@@ -595,14 +602,6 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     document.getElementById('s-confirm-delete').addEventListener('change', (e) => {
         onSettingChange('confirm_delete', e.target.checked);
-    });
-    document.getElementById('s-force-us-titlebar').addEventListener('change', (e) => {
-        onSettingChange('force_us_titlebar', e.target.checked);
-        // Re-select current game to refresh titlebar state
-        if (selectedIndex >= 0) {
-            const library = getLibrary();
-            if (library && !library.games[selectedIndex].is_folder) selectGame(selectedIndex);
-        }
     });
     document.getElementById('btn-copy-name-to-jp').addEventListener('click', () => {
         const eng = document.getElementById('f-name-eng');
@@ -1152,7 +1151,6 @@ function selectGame(index) {
     setField('f-players', entry.game.display.players);
     setField('f-titlebar', entry.game.display.titlebar);
     updateTitlebarSelection(entry.game.display.titlebar);
-    applyForcedTitlebar();
     setField('f-ccolor', entry.game.display.ccolor);
     setField('f-csize', entry.game.display.csize);
     setField('f-demo-time', entry.game.display.demo_time);
@@ -1238,9 +1236,8 @@ function onFieldChange(el) {
     if (path === 'display.csize') {
         syncArchFromPlatform(entry);
         updateTags(entry);
-        applyForcedTitlebar();
     }
-    if (path.startsWith('display.')) queueTitlePreview();
+    if (['display.name', 'display.name_eng', 'display.titlebar'].includes(path)) queueTitlePreview();
 }
 
 // csize → rom.arch mapping
@@ -1331,36 +1328,7 @@ function initCcolorPicker() {
     });
 }
 
-// Returns the forced titlebar value for US lineup games, or null if not forced.
-// US HuCard (csize 0,1) → titlebar 9 (TG16), US CD-ROM (csize 2,3,4) → titlebar 10 (TG16-CD)
-function getForcedTitlebar() {
-    if (!editorSettings.force_us_titlebar || currentLineup !== 'us') return null;
-    if (selectedIndex < 0) return null;
-    const library = getLibrary();
-    if (!library) return null;
-    const entry = library.games[selectedIndex];
-    if (!entry || entry.is_folder) return null;
-    const csize = entry.game.display.csize;
-    return (csize <= 1) ? 9 : 10;
-}
-
-function applyForcedTitlebar() {
-    const forced = getForcedTitlebar();
-    if (forced !== null) {
-        const library = getLibrary();
-        const entry = library.games[selectedIndex];
-        // Zero deliberately hides the banner, including in the US lineup.
-        if (entry.game.display.titlebar !== 0) {
-            entry.game.display.titlebar = forced;
-            updateTitlebarSelection(forced);
-        }
-    }
-    for (const opt of document.querySelectorAll('.titlebar-option')) {
-        const value = Number(opt.dataset.titlebar);
-        opt.disabled = forced !== null && value !== 0 && value !== forced;
-    }
-}
-
+// ---- Titlebar picker ----
 const TITLEBAR_LABELS = [
         'White bar',
         '1 · HuCARD — purple',
@@ -1394,11 +1362,6 @@ function chooseTitlebar(value) {
         const library = getLibrary();
         const entry = library?.games[selectedIndex];
         if (!entry || entry.is_folder) return;
-        const forced = getForcedTitlebar();
-        if (forced !== null && value !== 0 && value !== forced) {
-            updateTitlebarSelection(entry.game.display.titlebar);
-            return;
-        }
         entry.game.display.titlebar = value;
         updateTitlebarSelection(value);
         autoSave();
@@ -2238,8 +2201,7 @@ async function addFolder() {
 
 // ---- Move game between lineups/folders ----
 // Presents a destination picker (other lineup, subfolders) via modalSelect,
-// moves the game folder on disk, updates both source and destination gamelists,
-// and applies forced titlebar if moving to US lineup.
+// moves the game folder on disk and updates both source and destination gamelists.
 async function moveGame() {
     const library = getLibrary();
     if (selectedIndex < 0) return;
@@ -2292,6 +2254,12 @@ async function moveGame() {
         : dest.lineup;
 
     try {
+        // Persist the chosen titlebar (and any other pending edits) before the
+        // moved entry is reloaded from disk. Also wait for earlier saves.
+        if (saveTimeout) clearTimeout(saveTimeout);
+        saveTimeout = null;
+        await saveNow();
+
         // Move on disk, get final folder name (may be renamed on conflict)
         const finalName = await invoke('move_game', {
             gamesPath: dualLibrary.path,
@@ -2354,12 +2322,6 @@ async function moveGame() {
             movedEntry.sort.sor_genr = targetGames.length;
             targetGames.push(movedEntry);
             recomputeSortIndices(targetGames);
-
-            // Apply forced titlebar if moving to US lineup
-            if (dest.lineup === 'us' && editorSettings.force_us_titlebar && movedEntry.game.display.titlebar !== 0) {
-                const e = targetGames[targetGames.length - 1];
-                e.game.display.titlebar = (e.game.display.csize <= 1) ? 9 : 10;
-            }
         }
 
         // Save source subfolder contents and update parent game_count

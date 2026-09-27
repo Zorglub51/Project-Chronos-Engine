@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const app = fs.readFileSync(require('node:path').join(__dirname, '../src/app.js'), 'utf8');
-const source = app.slice(app.indexOf('// Returns the forced titlebar'), app.indexOf('// ---- Cover ----'));
+const source = app.slice(app.indexOf('// ---- Titlebar picker ----'), app.indexOf('// ---- Cover ----'));
 
 function setup(lineup, titlebar, csize = 0) {
     const options = [];
@@ -30,7 +30,7 @@ function setup(lineup, titlebar, csize = 0) {
             addEventListener(){},
         },
     });
-    vm.runInContext(source+';initTitlebarPicker();updateTitlebarSelection(getLibrary().games[0].game.display.titlebar);applyForcedTitlebar();',context);
+    vm.runInContext(source+';initTitlebarPicker();updateTitlebarSelection(getLibrary().games[0].game.display.titlebar);',context);
     return {context,options,entry,field,saves:()=>saves,
         choose(value){options[value].click();}};
 }
@@ -49,25 +49,19 @@ test('Stock Neutopia II value zero is visibly selected and can be restored after
     assert.equal(t.saves(),2);
 });
 
-test('Forced US styles preserve No titlebar and allow switching between none and the US banner',()=>{
-    for(const [csize,forced] of [[0,9],[1,9],[3,10],[4,10]]) {
-        const t=setup('us',0,csize);
-        assert.equal(t.entry.game.display.titlebar,0);
-        assert.equal(t.options[0].disabled,false);
-        assert.equal(t.options[forced].disabled,false);
-        assert.equal(t.options[4].disabled,true);
-        t.choose(4);
-        assert.equal(t.entry.game.display.titlebar,0);
-        t.choose(forced);
-        assert.equal(t.entry.game.display.titlebar,forced);
-        t.choose(0);
-        vm.runInContext('applyForcedTitlebar()',t.context);
-        assert.equal(t.entry.game.display.titlebar,0);
-        assert.equal(t.field.value,'0');
+test('Every titlebar is available in either lineup on every platform, even with legacy settings',()=>{
+    for(const lineup of ['jp','us']) {
+        for(const csize of [0,1,2,3,4]) {
+            const t=setup(lineup,12,csize);
+            assert.equal(t.entry.game.display.titlebar,12);
+            assert.equal(t.field.value,'12');
+            assert.ok(t.options.every(opt=>!opt.disabled));
+            for(let value=0;value<13;value++) {
+                t.choose(value);
+                assert.equal(t.entry.game.display.titlebar,value);
+                assert.equal(t.field.value,String(value));
+                assert.equal(t.options[value].attributes['aria-pressed'],'true');
+            }
+        }
     }
-    const t=setup('us',4);
-    assert.equal(t.entry.game.display.titlebar,9);
-    t.context.editorSettings.force_us_titlebar=false;
-    vm.runInContext('applyForcedTitlebar()',t.context);
-    assert.ok(t.options.every(opt=>!opt.disabled));
 });

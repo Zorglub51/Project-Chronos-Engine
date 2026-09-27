@@ -12,8 +12,13 @@ packed at publication. A raw and a packed ROM targeting the same output name
 cannot silently overwrite one another. The native profile omits the final `.m`
 because m2engage appends that suffix itself.
 
-The first titlebar choice, **No titlebar**, stores the native value `0`, as used
+The first titlebar choice, **White bar**, stores the native value `0`, as used
 by the original JP Neutopia II (`GAME043`). It survives saving, moving between
-folders/lineups, and publication to `title_mode_top.psb.m`. The US titlebar
-setting preserves this explicit absence; it restricts visible banners to TG16
-or TG16-CD without preventing the user from choosing no banner.
+folders/lineups, and publication to `title_mode_top.psb.m`. All 13 styles are
+available in both JP and US lineups, regardless of the game's platform. Moving
+a game or changing its platform preserves the chosen style. The former setting
+that forced US banners is removed; old settings files no longer enable it.
+
+The console title preview keeps the previous image visible while rendering and
+decoding its replacement. Typing is debounced, obsolete results are ignored, and
+the preview and error row retain their height when changing language or text.

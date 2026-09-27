@@ -6,13 +6,13 @@ Japanese font. Games, BIOS files, and original console resources are not bundled
 
 ## Install and launch
 
-Download `pce-game-editor-1.0.0alpha-2-x86_64.pkg.tar.zst` from the
+Download `pce-game-editor-1.0.0alpha-3-x86_64.pkg.tar.zst` from the
 [GitHub releases](https://github.com/Zorglub51/Project-Chronos-Engine/releases).
 From the download directory, update Arch and install the local package:
 
 ```sh
 sudo pacman -Syu
-sudo pacman -U ./pce-game-editor-1.0.0alpha-2-x86_64.pkg.tar.zst
+sudo pacman -U ./pce-game-editor-1.0.0alpha-3-x86_64.pkg.tar.zst
 ```
 
 Pacman resolves the declared dependencies from Arch's repositories, including
@@ -38,7 +38,7 @@ This does not remove your libraries or user settings.
 
 ## Graphics compatibility
 
-Package revision 2 selects WebKitGTK's non-DMA-BUF renderer by default on Linux.
+Package revision 2 and later select WebKitGTK's non-DMA-BUF renderer by default on Linux.
 This works around `Failed to create GBM buffer ... Invalid argument` and blank
 windows reported with some graphics drivers. It applies both to terminal and
 application-menu launches, without changing your display session or system-wide

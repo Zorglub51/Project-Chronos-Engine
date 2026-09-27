@@ -22,3 +22,15 @@ that forced US banners is removed; old settings files no longer enable it.
 The console title preview keeps the previous image visible while rendering and
 decoding its replacement. Typing is debounced, obsolete results are ignored, and
 the preview and error row retain their height when changing language or text.
+
+## Replacing a ROM
+
+Importing a replacement ROM saves the new selection, then removes the previous
+ROM from that game's library directory. This also applies when a CUE conversion
+produces a new PCD. Source files outside the game directory, save data, covers,
+and unrelated ROM files are left in place. A file still referenced by the saved
+game (for example, as a BIOS) is retained.
+
+The old ROM is kept if conversion, copying or saving fails. Reimporting the same
+file does not delete it. If cleanup fails after a successful import and save,
+the editor reports that the new ROM is active but the old file was kept.

@@ -152,7 +152,18 @@ fn cue_conversion_bios_extraction_and_direct_pcd_copy() {
     let previous = fs::read(&output).unwrap();
     let second = import_rom(&cue, &root.join("game"), Some(&bios), &|_| {}).unwrap();
     assert_eq!(second.filename, "Game (2).pcd");
-    assert_eq!(fs::read(output).unwrap(), previous);
+    assert_eq!(fs::read(&output).unwrap(), previous);
+    // The editor saves the replacement before removing the former PCD.
+    fs::write(
+        root.join("game/game.json"),
+        serde_json::json!({"rom":{"rom":second.filename}}).to_string(),
+    ).unwrap();
+    m2_import::remove_replaced_rom(&root.join("game"), &first.filename, &second.filename).unwrap();
+    assert!(!output.exists());
+    assert!(PcdArchive::open(root.join("game").join(&second.filename)).is_ok());
+    assert!(cue.exists());
+    assert_eq!(fs::read(root.join("Track 01.bin")).unwrap(), raw);
+    assert_eq!(fs::read(root.join("Track 02.bin")).unwrap(), audio_bytes);
 }
 
 #[test]

@@ -1,10 +1,12 @@
 //! Desktop import pipeline. Sources are read-only; outputs are staged before commit.
 mod cd;
 mod covers;
+mod replacement;
 mod source;
 mod stock;
 
 pub use cd::{bios_status, configure_bios, import_rom, BiosConfig, BiosStatus, ImportResult};
+pub use replacement::remove_replaced_rom;
 use serde::Serialize;
 pub use stock::{create_library, NewLibraryResult};
 

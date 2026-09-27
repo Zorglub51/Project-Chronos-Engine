@@ -11,6 +11,16 @@ fn bios_cache(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
+pub fn remove_replaced_rom(
+    dest_dir: String,
+    previous: String,
+    replacement: String,
+) -> Result<(), String> {
+    m2_import::remove_replaced_rom(Path::new(&dest_dir), &previous, &replacement)
+        .map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
 pub async fn import_rom(
     src_path: String,
     dest_dir: String,

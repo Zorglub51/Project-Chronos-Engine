@@ -1170,6 +1170,7 @@ pub fn run() {
             init_library,
             get_editor_root,
             import_commands::import_rom,
+            import_commands::remove_replaced_rom,
             import_commands::configure_bios,
             import_commands::get_bios_status,
             import_commands::create_library_from_dump,

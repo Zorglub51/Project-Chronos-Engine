@@ -1707,32 +1707,67 @@ async function importRomFile(srcPath, dataPath, inputEl) {
     if (!entry || entry.is_folder) return;
     const folderPrefix = currentFolder ? currentFolder.name + '/' : '';
     const destDir = dualLibrary.path + '/' + currentLineup + '/' + folderPrefix + entry.folder;
-    if (/\.cue$/i.test(srcPath)) {
-        const status = await invoke('get_bios_status', { bios: editorSettings.bios || null });
-        if (!status.ready) {
-            await modalAlert(status.message + '\nOpen Settings → CD conversion to configure the BIOS.');
-            openSettings();
-            return;
-        }
-    }
+    const parts = dataPath.split('.');
+    let obj = entry.game;
+    for (let i = 0; i < parts.length - 1; i++) obj = obj[parts[i]];
+    const key = parts[parts.length - 1];
+    const previous = obj[key];
+    const previousSize = entry.game.display.csize;
+    const previousArch = entry.game.rom.arch;
+    let needsBiosSettings = false;
     try {
-        const result = await runOperation(/\.cue$/i.test(srcPath) ? 'Convert CD to PCD' : 'Import ROM',
-            onProgress => invoke('import_rom', { srcPath, destDir, bios: editorSettings.bios || null, onProgress }));
-        const parts = dataPath.split('.');
-        let obj = entry.game;
-        for (let i = 0; i < parts.length - 1; i++) obj = obj[parts[i]];
-        obj[parts[parts.length - 1]] = result.filename;
-        inputEl.value = result.filename;
-        // Retain a CD platform already chosen by the user (including Arcade CD).
-        if (result.cd && ![2, 3, 4].includes(entry.game.display.csize)) {
-            entry.game.display.csize = 3;
-            syncArchFromPlatform(entry);
-            setField('f-csize', 3);
-            updateTags(entry);
-        }
-        await saveNow();
-        await populateRomDatalist(entry);
-    } catch (e) { await modalAlert('ROM import failed: ' + e); }
+        const warning = await runOperation(/\.cue$/i.test(srcPath) ? 'Convert CD to PCD' : 'Import ROM', async onProgress => {
+            if (/\.cue$/i.test(srcPath)) {
+                const status = await invoke('get_bios_status', { bios: editorSettings.bios || null });
+                if (!status.ready) {
+                    needsBiosSettings = true;
+                    throw new Error(status.message + '\nOpen Settings → CD conversion to configure the BIOS.');
+                }
+            }
+            // Keep selection locked until save and cleanup finish, and drain
+            // pending autosaves before modifying the ROM choice.
+            if (saveTimeout) clearTimeout(saveTimeout);
+            saveTimeout = null;
+            await saveNow();
+            const result = await invoke('import_rom', { srcPath, destDir, bios: editorSettings.bios || null, onProgress });
+            obj[key] = result.filename;
+            inputEl.value = result.filename;
+            // Retain a CD platform already chosen by the user (including Arcade CD).
+            if (result.cd && ![2, 3, 4].includes(entry.game.display.csize)) {
+                entry.game.display.csize = 3;
+                syncArchFromPlatform(entry);
+                setField('f-csize', 3);
+                updateTags(entry);
+            }
+            try {
+                await saveNow();
+            } catch (e) {
+                // A failed save must not trigger deletion or leave the unsaved
+                // choice active in the form for a later automatic save.
+                obj[key] = previous;
+                inputEl.value = previous || '';
+                entry.game.display.csize = previousSize;
+                entry.game.rom.arch = previousArch;
+                setField('f-csize', previousSize);
+                updateTags(entry);
+                throw e;
+            }
+            let cleanupWarning;
+            if (previous && previous !== result.filename) {
+                try {
+                    await invoke('remove_replaced_rom', { destDir, previous, replacement: result.filename });
+                } catch (e) {
+                    cleanupWarning = 'The new ROM was imported and saved, but the previous file was kept:\n' + previous + '\n\n' + e;
+                }
+            }
+            await populateRomDatalist(entry);
+            return cleanupWarning;
+        });
+        if (warning) await modalAlert(warning);
+    } catch (e) {
+        await modalAlert('ROM import failed: ' + e);
+        if (needsBiosSettings) openSettings();
+    }
 }
 
 async function populateRomDatalist(entry) {

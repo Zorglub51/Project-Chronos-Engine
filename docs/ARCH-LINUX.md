@@ -6,13 +6,13 @@ Japanese font. Games, BIOS files, and original console resources are not bundled
 
 ## Install and launch
 
-Download `pce-game-editor-1.0.0alpha-3-x86_64.pkg.tar.zst` from the
+Download `pce-game-editor-1.0.0alpha-4-x86_64.pkg.tar.zst` from the
 [GitHub releases](https://github.com/Zorglub51/Project-Chronos-Engine/releases).
 From the download directory, update Arch and install the local package:
 
 ```sh
 sudo pacman -Syu
-sudo pacman -U ./pce-game-editor-1.0.0alpha-3-x86_64.pkg.tar.zst
+sudo pacman -U ./pce-game-editor-1.0.0alpha-4-x86_64.pkg.tar.zst
 ```
 
 Pacman resolves the declared dependencies from Arch's repositories, including

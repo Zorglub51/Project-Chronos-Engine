@@ -14,13 +14,16 @@ export LIBGL_ALWAYS_SOFTWARE=1
 # Exercise the application's own Linux renderer default, not a test-only fix.
 unset WEBKIT_DISABLE_DMABUF_RENDERER
 
-ldd /usr/bin/pce-game-editor > "$output/ldd.txt"
+binary=${2:-/usr/bin/pce-game-editor}
+if [[ $binary != *.AppImage ]]; then
+ldd "$binary" > "$output/ldd.txt"
 if grep -q 'not found' "$output/ldd.txt"; then
     cat "$output/ldd.txt" >&2
     exit 1
 fi
 pacman -Qkk pce-game-editor > "$output/package-check.txt"
-pce-game-editor > "$output/application.log" 2>&1 &
+fi
+"$binary" > "$output/application.log" 2>&1 &
 app=$!
 trap 'kill "$app" 2>/dev/null || true; wait "$app" 2>/dev/null || true' EXIT
 

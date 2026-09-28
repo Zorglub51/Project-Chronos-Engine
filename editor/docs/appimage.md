@@ -12,7 +12,10 @@ chmod +x PCE-Game-Editor-linux-x86_64.AppImage
 
 Use the actual downloaded filename in these commands. A graphical Linux desktop with its standard Fontconfig font libraries
 is required; GTK and WebKit are bundled. The build uses Ubuntu 22.04 (glibc 2.35) as its compatibility baseline;
-older distributions are not supported. The editor preserves its Linux graphics
+older distributions are not supported. Graphics-driver companion libraries
+(Wayland, XCB, XKB, EGL/GL, GBM and DRM) are supplied by the desktop system,
+so they match its Mesa or proprietary driver. The packaging step removes older
+copies of these libraries that Tauri would otherwise bundle. The editor preserves its Linux graphics
 compatibility default, including the workaround needed on some Arch systems.
 
 If FUSE is unavailable, run without mounting the AppImage:

@@ -58,7 +58,11 @@ Linux session does not receive the desktop `uaccess` ACL automatically.
 
 Linux normally loads `rndis_host` automatically. If it is unavailable, install
 or enable the corresponding kernel module; `sudo modprobe rndis_host` can load
-an installed module. The network configuration is temporary and may need to be
+an installed module. The bundled network helper is copied into a private temporary directory for
+the Polkit request, so it can run even when root cannot access the AppImage
+FUSE mount; the copy is removed after execution. This follows the
+[AppImage guidance for privileged helpers](https://discourse.appimage.org/t/nosuid-fuse-mount-option-deactivates-capabilities/1652). The network configuration is
+temporary and may need to be
 reapplied after unplugging/reconnecting the console. No network bridge is created.
 
 Without Polkit, configure the detected USB interface manually:

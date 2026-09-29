@@ -33,8 +33,12 @@ pub fn connect(app: &AppHandle, interface: &str) -> Result<(), String> {
     if !pkexec.is_file() {
         return Err("Install polkit to configure the USB network, or use the manual commands in the README.".into());
     }
+    // Root cannot normally read another user's FUSE mount. Stage the helper
+    // outside the AppImage before pkexec; keep the private directory alive
+    // through authentication and execution, then remove it automatically.
+    let (_staging, executable) = stage_helper(&helper)?;
     let out = Command::new(pkexec)
-        .arg(helper)
+        .arg(executable)
         .arg("configure")
         .arg(interface)
         .output()
@@ -46,4 +50,59 @@ pub fn connect(app: &AppHandle, interface: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+fn stage_helper(source: &Path) -> Result<(tempfile::TempDir, PathBuf), String> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix("pce-recovery-network-");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(std::fs::Permissions::from_mode(0o700));
+    }
+    let dir = builder
+        .tempdir()
+        .map_err(|e| format!("Prepare network helper: {e}"))?;
+    let target = dir.path().join("pce-recovery-network");
+    std::fs::copy(source, &target).map_err(|e| format!("Copy network helper: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| format!("Network helper permissions: {e}"))?;
+    }
+    Ok((dir, target))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn privileged_helper_is_copied_outside_the_bundle_and_cleaned_up() {
+        let source_dir = tempfile::tempdir().unwrap();
+        let source = source_dir.path().join("helper");
+        std::fs::write(&source, b"bundled helper").unwrap();
+        let (staging, target) = stage_helper(&source).unwrap();
+        assert!(!target.starts_with(source_dir.path()));
+        assert_eq!(std::fs::read(&target).unwrap(), b"bundled helper");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+            assert_eq!(
+                std::fs::metadata(staging.path())
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+        }
+        drop(staging);
+        assert!(!target.exists());
+        assert!(source.exists());
+    }
 }

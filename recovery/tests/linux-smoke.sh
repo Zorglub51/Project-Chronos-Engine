@@ -36,13 +36,13 @@ for ((attempt=0; attempt<45; attempt++)); do
     if [[ -n $window ]]; then
         xdotool mousemove 0 0
         maim -i "$window" "$output/welcome.png"
-        # OCR otherwise drops white text on the colored buttons. Keep the
-        # original screenshot as evidence and normalize a separate OCR input.
+        # Keep antialiased letter contours: a hard threshold makes Arch
+        # font rendering lose the lower curve of P. Invert a grayscale
+        # copy for OCR and retain the untouched screenshot as evidence.
         python3 - "$output/welcome.png" "$output/welcome-ocr.png" <<'PY'
 from PIL import Image, ImageOps
 import sys
-image = ImageOps.grayscale(Image.open(sys.argv[1]))
-image = image.point(lambda pixel: 0 if pixel >= 140 else 255)
+image = ImageOps.invert(ImageOps.grayscale(Image.open(sys.argv[1])))
 image.resize((image.width * 3, image.height * 3)).save(sys.argv[2])
 PY
         tesseract "$output/welcome-ocr.png" "$output/welcome" --psm 6 2>/dev/null

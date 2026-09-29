@@ -1,0 +1,40 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/sunxi-fel",
+    "crates/pce-fel",
+    "crates/pce-recovery",
+    "crates/linux-network",
+    "apps/pce-gui/src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/Zorglub51/Project-Chronos-Engine"
+
+[workspace.dependencies]
+sunxi-fel = { path = "crates/sunxi-fel" }
+pce-fel = { path = "crates/pce-fel" }
+linux-network = { path = "crates/linux-network" }
+pce-recovery = { path = "crates/pce-recovery" }
+
+anyhow = "1"
+thiserror = "2"
+nusb = "0.1"
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+zerocopy = { version = "0.8", features = ["derive"] }
+futures-lite = "2"
+indicatif = "0.17"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+tauri = { version = "2", features = [] }
+tauri-build = { version = "2", features = [] }
+russh = "0.54"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "io-util", "macros", "time"] }
+async-trait = "0.1"
+sha1 = "0.10"

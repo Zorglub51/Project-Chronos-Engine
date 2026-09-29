@@ -1,0 +1,5 @@
+/target/
+/payloads/
+/dist/
+/apps/pce-gui/src-tauri/gen/
+/apps/pce-gui/node_modules/

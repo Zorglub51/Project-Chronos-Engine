@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "Default permissions for the PCE Mini Recovery window",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

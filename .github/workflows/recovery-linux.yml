@@ -1,0 +1,116 @@
+name: Build Linux recovery
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+
+env:
+  CARGO_BUILD_JOBS: '2'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  APPIMAGE_EXTRACT_AND_RUN: '1'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: Zorglub51/Project-Chronos
+          ref: f8654289657f78910ea4bc7f9862bfc62972147c
+          path: chronos-payloads
+          persist-credentials: false
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libssl-dev librsvg2-dev libxdo-dev patchelf libfuse2 cmake
+          mkdir -p recovery/payloads
+          cp chronos-payloads/tools/{fes1.bin,uboot.bin,boot.img.tftp.cpio.xz} recovery/payloads/
+          cd recovery/payloads
+          sha256sum -c ../packaging/payloads.sha256
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: recovery-ubuntu22-x86_64
+          cache-on-failure: true
+          workspaces: recovery -> target
+      - name: Build network helper
+        working-directory: recovery
+        run: cargo build --release -p linux-network --locked
+      - name: Test recovery operations and UI
+        working-directory: recovery
+        run: |
+          cargo test --workspace --locked
+          node --test apps/pce-gui/ui/*.test.cjs
+      - name: Build application
+        working-directory: recovery/apps/pce-gui
+        run: |
+          npm ci
+          npm run build -- --ci --bundles appimage -- --locked
+      - name: Finalize portable package
+        run: |
+          mkdir -p recovery-dist
+          plugin=$(find "$HOME/.cache/tauri" -name 'linuxdeploy-plugin-appimage*.AppImage' -print -quit)
+          test -n "$plugin"
+          bash editor/packaging/appimage/finalize.sh recovery/target/release/bundle/appimage/*.AppImage \
+            "$GITHUB_WORKSPACE/recovery-dist/PCE-Mini-Recovery-linux-x86_64.AppImage" "$plugin"
+          cp recovery/packaging/70-pce-recovery.rules recovery/README.md LICENSE recovery-dist/
+          git rev-parse HEAD > recovery-dist/SOURCE-COMMIT.txt
+          cd recovery-dist
+          sha256sum *.AppImage > PCE-Mini-Recovery-linux-x86_64.AppImage.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pce-recovery-linux-x86_64
+          path: recovery-dist/
+          if-no-files-found: error
+
+  launch:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['ubuntu:22.04', 'archlinux:base']
+    container: ${{ matrix.image }}
+    steps:
+      - name: Install standard desktop and test tools
+        shell: bash
+        run: |
+          if command -v apt-get; then
+            apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get install -y git dbus-x11 xvfb xauth xdotool maim tesseract-ocr python3-pil libgl1-mesa-dri libegl1 libxkbcommon0 libwayland-cursor0 libwayland-egl1 libasound2 fonts-dejavu-core
+          else
+            pacman -Syu --noconfirm --needed git dbus xorg-server-xvfb xorg-xauth xdotool maim tesseract tesseract-data-eng python-pillow mesa libglvnd alsa-lib fontconfig ttf-dejavu
+          fi
+          useradd --create-home tester
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: pce-recovery-linux-x86_64
+          path: package
+      - name: Launch without a console attached
+        shell: bash
+        run: |
+          cd package
+          sha256sum -c *.sha256
+          chmod +x *.AppImage
+          cd ..
+          mkdir smoke
+          chown tester:tester smoke
+          # Test-only: nested WebKit sandboxing is unavailable in these CI containers.
+          runuser -u tester -- env APPIMAGE_EXTRACT_AND_RUN=1 WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1 \
+            dbus-run-session -- xvfb-run -a -s '-screen 0 1400x1000x24' \
+            bash recovery/tests/linux-smoke.sh "$GITHUB_WORKSPACE/smoke" "$GITHUB_WORKSPACE/package/PCE-Mini-Recovery-linux-x86_64.AppImage"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: recovery-smoke-${{ strategy.job-index }}
+          path: |
+            smoke/*.png
+            smoke/*.txt
+            smoke/*.log

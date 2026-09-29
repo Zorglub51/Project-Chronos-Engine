@@ -1,0 +1,18 @@
+[package]
+name = "pce-recovery"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }
+russh = { workspace = true }
+tokio = { workspace = true }
+sha1 = { workspace = true }
+serde = { workspace = true }
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+
+[dev-dependencies]
+tempfile = "3"

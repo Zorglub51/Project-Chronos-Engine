@@ -1,0 +1,2 @@
+# Boot ROM / FEL only. The RNDIS interface remains owned by the Linux driver.
+SUBSYSTEM=="usb", ATTR{idVendor}=="1f3a", ATTR{idProduct}=="efe8", TAG+="uaccess", MODE="0660"

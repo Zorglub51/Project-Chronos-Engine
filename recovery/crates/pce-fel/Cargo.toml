@@ -1,0 +1,12 @@
+[package]
+name = "pce-fel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sunxi-fel = { workspace = true }
+nusb = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+futures-lite = { workspace = true }

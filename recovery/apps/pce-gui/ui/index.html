@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>PCE Mini Recovery</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>PCE Mini Recovery</h1>
+    <span id="device-state" class="pill pill-grey">no device</span>
+    <span class="header-spacer"></span>
+    <select id="network-interface" aria-label="Recovery USB interface"><option value="">Waiting for USB network…</option></select>
+    <button id="network-refresh">Refresh</button>
+    <button id="network-connect">Connect USB network</button>
+    <span class="header-ping">
+      <span id="ping-light" class="ping-light off" title="ping status"></span>
+      <span id="ping-label">Checking console…</span>
+    </span>
+  </header>
+
+  <main class="recovery-layout">
+    <section class="left">
+      <div class="card controls">
+        <div class="row">
+          <label>Recovery files</label>
+          <input id="payloads-dir" type="text" placeholder="Select recovery files folder" /><button id="payloads-browse">Browse…</button>
+        </div>
+        <div class="row">
+          <label>Wait (s)</label>
+          <input id="wait-secs" type="number" value="120" min="5" max="600" />
+          <button id="start" class="primary">Start recovery</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Recovery startup</h2><p class="hint">Connect the console micro-USB port with a data cable while its power switch is OFF. Click Start recovery, then switch the console ON when prompted. No partition is flashed during this step.</p>
+        <p id="recovery-prompt" class="recovery-prompt" role="status" aria-live="polite">Connect the console with its power switch OFF, then click Start recovery.</p>
+        <ol id="steps">
+          <!-- populated dynamically -->
+        </ol>
+      </div>
+
+      <div class="card" id="version-card" hidden>
+        <h2>FEL device</h2>
+        <pre id="version-info"></pre>
+      </div>
+
+      <div class="card" id="partitions-card">
+        <header class="card-header">
+          <h2>Partitions</h2>
+          <div class="card-actions">
+            <span id="batch-status" class="batch-status"></span>
+            <button id="dump-all">Dump all</button>
+          </div>
+        </header>
+        <table id="partitions-table">
+          <thead>
+            <tr>
+              <th>id</th>
+              <th>device</th>
+              <th class="right">size</th>
+              <th>role</th>
+              <th>actions</th>
+            </tr>
+          </thead>
+          <tbody><!-- populated dynamically --></tbody>
+        </table>
+        <p class="hint">Restore accepts a raw image or ZIP archive. The uncompressed image must match the partition size; integrity is checked before writing. First Linux use: install the USB access rule from the README. Boot recovery, then connect the USB network. Backups are verified before being saved.</p>
+      </div>
+
+    </section>
+
+    <section class="right"><div class="card"><h2>Activity</h2><pre id="activity" role="log" aria-live="polite"></pre></div></section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

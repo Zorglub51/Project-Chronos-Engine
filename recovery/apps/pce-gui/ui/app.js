@@ -140,7 +140,15 @@ async function wireBackend() {
     const up=e.payload.state==='up';document.getElementById('ping-light').className=`ping-light ${up?'up':'down'}`;
     document.getElementById('ping-label').textContent=up?'Console connected':'Console offline';
   });
-  await listen('recovery-done',e=>{document.getElementById('recovery-prompt').textContent=e.payload.msg;setBusy(false);setDeviceState(e.payload.ok?'Recovery boot sent':'Recovery failed',e.payload.ok?'green':'red');log(e.payload.msg);refreshNetwork();});
+  await listen('recovery-done',e=>{
+    const {ok,msg}=e.payload;
+    const prompt=document.getElementById('recovery-prompt');
+    prompt.textContent=msg;prompt.className=ok?'recovery-prompt':'recovery-prompt error';
+    if(!ok) for(const [id,node] of stepNodes) {
+      if(node.el.classList.contains('running')) {setStepState(id,'error');node.detail.textContent='Failed';}
+    }
+    setBusy(false);setDeviceState(ok?'Recovery boot sent':'Recovery failed',ok?'green':'red');log(msg);refreshNetwork();
+  });
   await listen('log',e=>log(e.payload.msg));
   await listen('partition-progress',e=>{
     const {id,kind,current,total}=e.payload;const cell=document.querySelector(`#partitions-table tr[data-id="${id}"] .row-progress`);
@@ -299,6 +307,7 @@ async function startRecovery() {
   const waitSecs=parseInt(document.getElementById('wait-secs').value,10)||120;
   buildSteps();setBusy(true);setDeviceState('Preparing detection…','amber');
   document.getElementById('version-card').hidden=true;
+  document.getElementById('recovery-prompt').className='recovery-prompt';
   document.getElementById('recovery-prompt').textContent='Keep the console OFF while detection is being prepared…';
   try {await invoke('start_recovery',{payloadsDir,waitSecs});}
   catch(e){log(`Recovery: ${e}`);document.getElementById('recovery-prompt').textContent=`Recovery failed: ${e}`;setDeviceState('Recovery failed','red');setBusy(false);}

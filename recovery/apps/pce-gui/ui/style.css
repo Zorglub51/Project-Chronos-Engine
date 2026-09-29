@@ -305,3 +305,5 @@ main.recovery-layout { grid-template-columns: minmax(620px, 1fr) 280px; height:a
 
 .recovery-prompt { color:var(--accent); font-size:13px; line-height:1.4; padding:10px 12px; border:1px solid var(--border); border-radius:6px; background:var(--panel-2); }
 body > header { flex-wrap:wrap; }
+
+.recovery-prompt.error { color:var(--red); }

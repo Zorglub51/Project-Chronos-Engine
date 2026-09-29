@@ -75,7 +75,6 @@ pub fn run(app: AppHandle, payloads_dir: PathBuf, wait: Duration) {
             );
         }
         Err(e) => {
-            emit_log(&app, "error", e.clone());
             let _ = app.emit(
                 "recovery-done",
                 serde_json::json!({ "ok": false, "msg": e }),

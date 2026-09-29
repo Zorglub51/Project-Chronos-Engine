@@ -16,7 +16,14 @@ function setup(failure) {
     return elements.get(id);
   };
   const events = new Map(), calls = [], buttons = [{ disabled: false }];
+  const classes = new Set(['pending']);
+  const testStep = { el: { classList: {
+    contains: name => classes.has(name),
+    add: name => classes.add(name),
+    remove: (...names) => names.forEach(name => classes.delete(name)),
+  } }, icon: {}, detail: {} };
   const context = vm.createContext({
+    testStep, performance: { now: () => 0 },
     window: { __TAURI__: {
       core: { invoke: async (command, args) => {
         calls.push({command, args});
@@ -28,8 +35,8 @@ function setup(failure) {
     document: { getElementById: get, querySelectorAll: () => buttons, createElement: () => ({}) },
   });
   vm.runInContext(source.slice(0, source.indexOf('\n(async()=>{')), context);
-  vm.runInContext('buildSteps = () => {};', context);
-  return { context, calls, buttons, get, emit: (name, payload) => events.get(name)({payload}) };
+  vm.runInContext("buildSteps = () => {}; stepNodes.set('Connect',testStep);", context);
+  return { context, calls, buttons, get, classes, testStep, emit: (name, payload) => events.get(name)({payload}) };
 }
 
 test('power-on prompt waits for backend detection phase, then startup runs automatically', async () => {
@@ -47,6 +54,9 @@ test('power-on prompt waits for backend detection phase, then startup runs autom
   await ui.emit('recovery-done', {ok: false, msg: 'No startup USB probe detected. Switch OFF and retry.'});
   assert.match(ui.get('recovery-prompt').textContent, /Switch OFF and retry/);
   assert.equal(ui.buttons[0].disabled, false);
+  assert.equal(ui.classes.has('running'), false);
+  assert.equal(ui.classes.has('error'), true);
+  assert.equal(ui.testStep.detail.textContent, 'Failed');
 });
 
 test('failure to start detection keeps the power-on instruction hidden and unlocks retry', async () => {

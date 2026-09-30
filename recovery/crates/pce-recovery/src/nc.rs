@@ -313,10 +313,13 @@ fn validate_target(output: &str, path: &str, expected: u64, writing: bool) -> Re
                 "Target is mounted. Boot the console into recovery before restoring.".into(),
             ));
         }
-        // A RAM-root recovery cannot alias its active root as an eMMC partition.
-        if !mounts
-            .iter()
-            .any(|m| m.len() >= 3 && m[1] == "/" && ["rootfs", "tmpfs", "ramfs"].contains(&m[2]))
+        // Share the same mode check used by the connection diagnostics.
+        if crate::console::classify_mounts(
+            output
+                .split_once('\n')
+                .map(|(_, mounts)| mounts)
+                .unwrap_or(""),
+        ) != crate::console::Environment::RamRecovery
         {
             return Err(NcError::Preflight(
                 "Console is not running from a RAM recovery filesystem.".into(),

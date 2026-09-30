@@ -72,6 +72,12 @@ function fmtBytes(n) {
 let busy = false;
 let batch = false;
 let refreshingNetwork = false;
+let networkSeen = false;
+function showNetworkAvailable(message = 'Console USB network detected. Click Connect USB network to check its recovery status.') {
+  setDeviceState('USB network detected','amber');
+  const prompt=document.getElementById('recovery-prompt');
+  prompt.textContent=message;prompt.className='recovery-prompt';
+}
 function setBusy(value) {
   busy = value;
   for (const el of document.querySelectorAll('#start, #network-connect, #network-refresh, #dump-all, #payloads-browse, .dump, .restore')) el.disabled = value;
@@ -98,10 +104,12 @@ async function refreshNetwork() {
     select.appendChild(placeholder);
     for(const iface of interfaces) {
       const option=document.createElement('option');option.value=iface.name;
-      option.textContent=`${iface.name} · ${iface.product || 'PCE Recovery'}`;select.appendChild(option);
+      option.textContent=`${iface.name} · ${iface.product || 'Console USB network'}`;select.appendChild(option);
     }
     if(interfaces.some(i=>i.name===previous)) select.value=previous;
     else if(interfaces.length===1) select.value=interfaces[0].name;
+    if(interfaces.length && !networkSeen && !busy) showNetworkAvailable();
+    networkSeen=interfaces.length>0;
   } catch(e) { log(`USB network: ${e}`); }
   finally { refreshingNetwork=false; }
 }
@@ -110,7 +118,15 @@ async function connectNetwork() {
   const interfaceName=document.getElementById('network-interface').value;
   if(!interfaceName) { log('Wait for the recovery USB network interface.');return; }
   setBusy(true);
-  try { await invoke('network_connect',{interface:interfaceName});log('USB network configured. Waiting for the console at 169.254.13.37…'); }
+  try {
+    const report=await invoke('network_connect',{interface:interfaceName});
+    networkSeen=true;
+    const ready=report.environment==='ram_recovery';
+    const prompt=document.getElementById('recovery-prompt');
+    prompt.textContent=report.message;prompt.className='recovery-prompt';
+    setDeviceState(ready?'RAM recovery verified':report.environment==='not_ram_recovery'?'Not in RAM recovery':'Recovery unverified',ready?'green':'amber');
+    log(report.message);
+  }
   catch(e) { log(`Network setup: ${e}`); }
   finally { setBusy(false); }
 }
@@ -141,13 +157,16 @@ async function wireBackend() {
     document.getElementById('ping-label').textContent=up?'Console connected':'Console offline';
   });
   await listen('recovery-done',e=>{
-    const {ok,msg}=e.payload;
+    const {ok,msg,status}=e.payload;
     const prompt=document.getElementById('recovery-prompt');
     prompt.textContent=msg;prompt.className=ok?'recovery-prompt':'recovery-prompt error';
     if(!ok) for(const [id,node] of stepNodes) {
       if(node.el.classList.contains('running')) {setStepState(id,'error');node.detail.textContent='Failed';}
     }
-    setBusy(false);setDeviceState(ok?'Recovery boot sent':'Recovery failed',ok?'green':'red');log(msg);refreshNetwork();
+    setBusy(false);
+    if(status==='network_available') {networkSeen=true;showNetworkAvailable(msg);}
+    else setDeviceState(ok?'Recovery boot sent':'Recovery failed',ok?'green':'red');
+    log(msg);refreshNetwork();
   });
   await listen('log',e=>log(e.payload.msg));
   await listen('partition-progress',e=>{
@@ -303,7 +322,7 @@ async function doRestore(p) {
 async function startRecovery() {
   if(busy)return;
   const payloadsDir=document.getElementById('payloads-dir').value.trim();
-  if(!payloadsDir){log('Choose the recovery files folder first.');return;}
+  if(!payloadsDir && !document.getElementById('network-interface').value){log('Choose the recovery files folder first.');return;}
   const waitSecs=parseInt(document.getElementById('wait-secs').value,10)||120;
   buildSteps();setBusy(true);setDeviceState('Preparing detection…','amber');
   document.getElementById('version-card').hidden=true;

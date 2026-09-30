@@ -4,7 +4,13 @@ use std::{
 };
 use tauri::{AppHandle, Manager};
 
-pub fn connect(app: &AppHandle, interface: &str) -> Result<(), String> {
+#[derive(serde::Serialize)]
+pub struct ConnectionReport {
+    environment: pce_recovery::console::Environment,
+    message: String,
+}
+
+pub fn connect(app: &AppHandle, interface: &str) -> Result<ConnectionReport, String> {
     if !linux_network::discover()
         .map_err(|e| e.to_string())?
         .iter()
@@ -49,7 +55,17 @@ pub fn connect(app: &AppHandle, interface: &str) -> Result<(), String> {
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    Ok(())
+    use pce_recovery::console::{self, Environment};
+    let (environment, message) = match console::inspect(linux_network::PEER) {
+        Ok(Environment::RamRecovery) => (Environment::RamRecovery, "RAM recovery verified. The console is ready for partition backups and restores.".to_string()),
+        Ok(Environment::NotRamRecovery) => (Environment::NotRamRecovery, "USB network connected, but the console is not running RAM recovery. Switch it OFF, unplug USB, reconnect while OFF, then click Start recovery and switch ON when prompted.".to_string()),
+        Ok(Environment::Unknown) => (Environment::Unknown, "USB network connected, but the console's root filesystem could not be identified. Recovery has not been verified.".to_string()),
+        Err(e) => (Environment::Unknown, format!("USB network configured, but recovery could not be verified: {e}. Wait for the console to finish starting, then click Connect USB network again.")),
+    };
+    Ok(ConnectionReport {
+        environment,
+        message,
+    })
 }
 
 fn stage_helper(source: &Path) -> Result<(tempfile::TempDir, PathBuf), String> {

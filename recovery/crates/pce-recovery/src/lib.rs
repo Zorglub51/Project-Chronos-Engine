@@ -1,6 +1,7 @@
 //! Post-recovery (in-recovery-image) tooling: TCP partition transfer + SSH
 //! ad-hoc commands against the PCE Mini's recovery initrd at `169.254.13.37`.
 
+pub mod console;
 pub mod image;
 pub mod nc;
 pub mod partitions;

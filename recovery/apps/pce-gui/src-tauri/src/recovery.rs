@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use pce_fel::{BootPhase, Progress, RecoveryPayloads};
 use serde::Serialize;
-use sunxi_fel::{wait_for_device, DeviceState, FelDevice};
+use sunxi_fel::{wait_for_device, DeviceState, FelDevice, FelError};
 use tauri::{AppHandle, Emitter};
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -65,13 +65,57 @@ fn emit_log(app: &AppHandle, level: &str, msg: impl Into<String>) {
     );
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum BootOutcome {
+    BootSent,
+    NetworkAvailable,
+}
+
+const NETWORK_AVAILABLE: &str = "Console USB network detected. Click Connect USB network to check whether the console is running RAM recovery or its normal Linux system.";
+
+fn network_present() -> bool {
+    linux_network::discover().is_ok_and(|interfaces| !interfaces.is_empty())
+}
+
+// Recheck the network between short FEL waits. The FEL library still polls
+// every 50 ms, including its udev permission grace period, within each wait.
+fn wait_for_startup(
+    timeout: Duration,
+    mut usb_probe: impl FnMut(Duration) -> Result<DeviceState, FelError>,
+    mut has_network: impl FnMut() -> bool,
+) -> Result<Option<DeviceState>, FelError> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if has_network() {
+            return Ok(None);
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match usb_probe(remaining.min(Duration::from_secs(1))) {
+            Ok(state) => return Ok(Some(state)),
+            Err(FelError::NotFound) => {
+                if has_network() {
+                    return Ok(None);
+                }
+                if Instant::now() >= deadline {
+                    return Err(FelError::NotFound);
+                }
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 pub fn run(app: AppHandle, payloads_dir: PathBuf, wait: Duration) {
     let res = run_inner(app.clone(), payloads_dir, wait);
     match res {
-        Ok(()) => {
+        Ok(outcome) => {
+            let (status, msg) = match outcome {
+                BootOutcome::BootSent => ("boot_sent", "Recovery boot sent. Wait for the USB network interface, then choose Connect USB network."),
+                BootOutcome::NetworkAvailable => ("network_available", NETWORK_AVAILABLE),
+            };
             let _ = app.emit(
                 "recovery-done",
-                serde_json::json!({ "ok": true, "msg": "Recovery boot sent. Wait for the USB network interface, then choose Connect USB network." }),
+                serde_json::json!({ "ok": true, "status": status, "msg": msg }),
             );
         }
         Err(e) => {
@@ -83,7 +127,11 @@ pub fn run(app: AppHandle, payloads_dir: PathBuf, wait: Duration) {
     }
 }
 
-fn run_inner(app: AppHandle, payloads_dir: PathBuf, wait: Duration) -> Result<(), String> {
+fn run_inner(app: AppHandle, payloads_dir: PathBuf, wait: Duration) -> Result<BootOutcome, String> {
+    // Reopening the app on an already booted console requires no FEL traffic.
+    if network_present() {
+        return Ok(BootOutcome::NetworkAvailable);
+    }
     let payloads = RecoveryPayloads::from_dir(&payloads_dir);
     payloads.check().map_err(|e| format!("{e}"))?;
     emit_log(
@@ -100,8 +148,12 @@ fn run_inner(app: AppHandle, payloads_dir: PathBuf, wait: Duration) -> Result<()
         "Ready: switch the console ON now (waiting for startup USB probe 1f3a:efe8)",
         0,
     );
-    let state = wait_for_device(wait).map_err(|e| format!("Startup USB detection failed: {e}. Switch the console OFF, check the data cable, click Start recovery again, then switch it ON when prompted."))?;
+    let state = wait_for_startup(wait, wait_for_device, network_present).map_err(|e| format!("Startup USB detection failed: {e}. Switch the console OFF, check the data cable, click Start recovery again, then switch it ON when prompted."))?;
     emit_finish(&app, PhaseId::Connect, t0.elapsed().as_millis());
+
+    let Some(state) = state else {
+        return Ok(BootOutcome::NetworkAvailable);
+    };
 
     // Detection only inspected descriptors; trigger() takes ownership once.
     match state {
@@ -214,5 +266,53 @@ fn run_inner(app: AppHandle, payloads_dir: PathBuf, wait: Duration) -> Result<()
 
     // No per-recovery probe needed — `netprobe::spawn_persistent` runs for
     // the lifetime of the app from `main.rs::setup`.
-    Ok(())
+    Ok(BootOutcome::BootSent)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn existing_network_skips_all_fel_requests() {
+        let result = wait_for_startup(
+            Duration::ZERO,
+            |_| panic!("FEL must not be accessed"),
+            || true,
+        );
+        assert_eq!(result.unwrap(), None);
+    }
+    #[test]
+    fn network_appearing_during_detection_ends_the_wait() {
+        let mut observations = 0;
+        let result = wait_for_startup(
+            Duration::ZERO,
+            |_| Err(FelError::NotFound),
+            || {
+                observations += 1;
+                observations > 1
+            },
+        );
+        assert_eq!(result.unwrap(), None);
+    }
+    #[test]
+    fn fel_modes_and_real_usb_errors_are_preserved() {
+        for state in [DeviceState::BootRom, DeviceState::Fel] {
+            assert_eq!(
+                wait_for_startup(Duration::ZERO, |_| Ok(state), || false).unwrap(),
+                Some(state)
+            );
+        }
+        assert!(matches!(
+            wait_for_startup(Duration::ZERO, |_| Err(FelError::NotFound), || false),
+            Err(FelError::NotFound)
+        ));
+        assert!(matches!(
+            wait_for_startup(
+                Duration::from_secs(120),
+                |_| Err(FelError::Usb("access denied".into())),
+                || false
+            ),
+            Err(FelError::Usb(_))
+        ));
+    }
 }

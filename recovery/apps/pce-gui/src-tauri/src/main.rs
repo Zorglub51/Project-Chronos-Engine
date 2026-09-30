@@ -159,7 +159,7 @@ async fn network_connect(
     app: AppHandle,
     state: State<'_, AppState>,
     interface: String,
-) -> Result<(), String> {
+) -> Result<network::ConnectionReport, String> {
     let operation = acquire(&state)?;
     tauri::async_runtime::spawn_blocking(move || {
         let _operation = operation;

@@ -53,8 +53,24 @@ Linux session does not receive the desktop `uaccess` ACL automatically.
    the selected interface's USB identity (`04e8:6863`) and RNDIS driver before
    adding host address `169.254.13.36/32` and a route to `169.254.13.37/32`.
    It does not add a gateway or change the default route or DNS.
-4. When the console is connected, use **Dump** or **Restore** on the desired row.
+4. The connection check reads the console mount table over SSH. When it reports
+   **RAM recovery verified**, use **Dump** or **Restore** on the desired row.
    A restore always shows the file, ZIP member and destination before confirmation.
+
+If a USB network interface is already listed when the application opens, click
+**Connect USB network** directly. The console is already running Linux; the
+network identity alone does not distinguish RAM recovery from normal firmware.
+Starting detection in this state no longer times out looking for the earlier
+FEL device. The connection check reports either **RAM recovery verified**,
+**Not in RAM recovery**, or **Recovery unverified**, with the next action.
+If normal firmware is running, switch OFF, unplug USB, reconnect while OFF,
+then start detection before switching ON.
+
+An `atk-bridge: get_device_events_reply: unknown signature` terminal warning
+comes from [GNOME's accessibility D-Bus bridge](https://github.com/GNOME/at-spi2-core/blob/main/atk-adaptor/bridge.c),
+not the USB transport. For USB failures, use the full error in **Activity**:
+access-denied errors require the udev rule above; a missing FEL device can mean
+the startup probe was missed or the console has already booted Linux.
 
 Linux normally loads `rndis_host` automatically. If it is unavailable, install
 or enable the corresponding kernel module; `sudo modprobe rndis_host` can load

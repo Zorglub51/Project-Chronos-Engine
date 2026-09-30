@@ -6,7 +6,7 @@ const vm = require('node:vm');
 // Exercise event sequencing without USB access: the UI must not tell the user
 // to power on merely because a command was queued on the frontend.
 const source = fs.readFileSync(`${__dirname}/app.js`, 'utf8');
-function setup(failure) {
+function setup(failure, report) {
   const elements = new Map();
   const get = id => {
     if (!elements.has(id)) elements.set(id, {
@@ -28,6 +28,7 @@ function setup(failure) {
       core: { invoke: async (command, args) => {
         calls.push({command, args});
         if (command === 'start_recovery' && failure) throw Error(failure);
+        if (command === 'network_connect') return report;
         return [];
       } },
       event: { listen: async (name, fn) => events.set(name, fn) },
@@ -65,4 +66,27 @@ test('failure to start detection keeps the power-on instruction hidden and unloc
   assert.match(ui.get('recovery-prompt').textContent, /Recovery failed:.*Missing recovery files/);
   assert.doesNotMatch(ui.get('recovery-prompt').textContent, /switch the console ON now/);
   assert.equal(ui.buttons[0].disabled, false);
+});
+
+test('an existing USB network is reported without claiming that RAM recovery is verified', async () => {
+  const ui = setup();
+  await ui.context.wireBackend();
+  await ui.emit('recovery-done', {ok: true, status: 'network_available', msg: 'USB network detected. Connect to check recovery status.'});
+  assert.equal(ui.get('device-state').textContent, 'USB network detected');
+  assert.match(ui.get('recovery-prompt').textContent, /Connect to check/);
+  assert.equal(ui.buttons[0].disabled, false);
+  assert.doesNotMatch(ui.get('device-state').textContent, /verified|failed/);
+});
+
+test('connecting distinguishes verified RAM recovery, normal Linux, and an unverified connection', async () => {
+  for (const [environment, expected] of [['ram_recovery','RAM recovery verified'], ['not_ram_recovery','Not in RAM recovery'], ['unknown','Recovery unverified']]) {
+    const ui = setup(null, {environment, message: `Result: ${environment}`});
+    ui.get('network-interface').value='enp3s0f0u3';
+    await ui.context.connectNetwork();
+    assert.equal(ui.calls[0].command, 'network_connect');
+    assert.equal(ui.calls[0].args.interface, 'enp3s0f0u3');
+    assert.equal(ui.get('device-state').textContent, expected);
+    assert.equal(ui.get('recovery-prompt').textContent, `Result: ${environment}`);
+    assert.equal(ui.buttons[0].disabled, false);
+  }
 });

@@ -2336,7 +2336,7 @@ dependencies = [
 
 [[package]]
 name = "linux-network"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "tempfile",
@@ -2965,7 +2965,7 @@ dependencies = [
 
 [[package]]
 name = "pce-fel"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures-lite",
  "nusb",
@@ -2976,7 +2976,7 @@ dependencies = [
 
 [[package]]
 name = "pce-gui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "linux-network",
@@ -2994,7 +2994,7 @@ dependencies = [
 
 [[package]]
 name = "pce-recovery"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "flate2",
  "russh",
@@ -4245,7 +4245,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "sunxi-fel"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures-lite",
  "nusb",

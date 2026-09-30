@@ -1,1 +1,12 @@
-{"name":"pce-mini-recovery","version":"0.1.0","private":true,"scripts":{"build":"tauri build","dev":"tauri dev"},"devDependencies":{"@tauri-apps/cli":"2.10.1"}}
+{
+  "name": "pce-mini-recovery",
+  "version": "0.1.1",
+  "private": true,
+  "scripts": {
+    "build": "tauri build",
+    "dev": "tauri dev"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.10.1"
+  }
+}

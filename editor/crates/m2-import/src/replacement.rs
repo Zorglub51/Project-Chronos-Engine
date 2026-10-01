@@ -40,7 +40,7 @@ pub fn remove_replaced_rom(directory: &Path, previous: &str, replacement: &str) 
         game["rom"]["rom"].as_str() == Some(replacement),
         "The new ROM selection has not been saved; keeping the previous ROM"
     );
-    let new_path = directory.join(replacement);
+    let new_path = m2_publish::rom_store::resolve(directory, replacement);
     let new_info = fs::symlink_metadata(&new_path).context("The new ROM is missing")?;
     ensure!(
         new_info.is_file() && new_info.len() > 0,
@@ -54,6 +54,13 @@ pub fn remove_replaced_rom(directory: &Path, previous: &str, replacement: &str) 
     // The previous file may still be referenced as a BIOS or an alternate ROM.
     if references(&game, previous) {
         return Ok(());
+    }
+    if let Some(root) = m2_publish::rom_store::library_root(directory) {
+        if !directory.join(previous).exists() {
+            m2_publish::rom_store::queue_cleanup(&root, previous)?;
+            m2_publish::rom_store::cleanup(&root)?;
+            return Ok(());
+        }
     }
     let old_path = directory.join(previous);
     let old_info = match fs::symlink_metadata(&old_path) {

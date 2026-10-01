@@ -150,6 +150,21 @@ fn cue_conversion_bios_extraction_and_direct_pcd_copy() {
         fs::read(&output).unwrap()
     );
     let previous = fs::read(&output).unwrap();
+    let duplicate = import_rom(&cue, &root.join("game"), Some(&bios), &|_| {}).unwrap();
+    assert_eq!(duplicate.filename, first.filename);
+    let shared = root.join("library");
+    for lineup in ["jp", "us"] {
+        fs::create_dir_all(shared.join(lineup).join("GAME")).unwrap();
+        fs::write(shared.join(lineup).join("gamelist.json"), "[]").unwrap();
+    }
+    let shared_cue = m2_import::import_library_rom(&cue, &shared.join("jp/GAME"), Some(&bios), &|_| {}).unwrap();
+    let shared_pcd = m2_import::import_library_rom(&output, &shared.join("us/GAME"), None, &|_| {}).unwrap();
+    assert_eq!(shared_cue.filename, shared_pcd.filename);
+    assert_eq!(fs::read_dir(shared.join("published/roms")).unwrap().count(), 1);
+    assert_eq!(fs::read_dir(shared.join("jp/GAME")).unwrap().count(), 0);
+    assert_eq!(fs::read(shared.join("published/roms").join(shared_cue.filename)).unwrap(), previous);
+    raw[16] ^= 1;
+    fs::write(root.join("Track 01.bin"), &raw).unwrap();
     let second = import_rom(&cue, &root.join("game"), Some(&bios), &|_| {}).unwrap();
     assert_eq!(second.filename, "Game (2).pcd");
     assert_eq!(fs::read(&output).unwrap(), previous);

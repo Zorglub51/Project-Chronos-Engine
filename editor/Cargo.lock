@@ -2208,6 +2208,7 @@ dependencies = [
  "md-5",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tiny-skia",
  "ttf-parser",

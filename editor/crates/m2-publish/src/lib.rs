@@ -40,6 +40,7 @@
 // Other output paths remain standalone exports (roms/, folders/, save/).
 
 mod library;
+pub mod rom_store;
 mod publish_pipeline;
 mod sync;
 mod templates;

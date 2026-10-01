@@ -3,12 +3,12 @@
 The ROM picker accepts `.pce.m` HuCards, including original names such as
 `Neutopia_II_J.PCE.m`. Import copies the archive byte for byte, with its original
 name, without decompression, conversion or BIOS configuration. An identical
-archive already present in the game directory is reused. A different archive
+archive already present in the shared ROM pool is reused. A different archive
 with the same name produces an error: MZS encryption depends on the filename,
 so the importer must not silently rename it. Other `.m` formats are rejected.
 
-Publishing copies these archives unchanged. Raw `.pce` ROMs continue to be
-packed at publication. A raw and a packed ROM targeting the same output name
+Imports store these archives unchanged in `library/published/roms/`. Raw `.pce`
+and `.sgx` ROMs are packed once during import. Publication reuses these files. A raw and a packed ROM targeting the same output name
 cannot silently overwrite one another. The native profile omits the final `.m`
 because m2engage appends that suffix itself.
 
@@ -25,12 +25,13 @@ the preview and error row retain their height when changing language or text.
 
 ## Replacing a ROM
 
-Importing a replacement ROM saves the new selection, then removes the previous
-ROM from that game's library directory. This also applies when a CUE conversion
-produces a new PCD. Source files outside the game directory, save data, covers,
-and unrelated ROM files are left in place. A file still referenced by the saved
-game (for example, as a BIOS) is retained.
+Importing a replacement ROM saves the new selection before scheduling the old
+shared file for cleanup. Cleanup preserves files referenced by another game,
+a BIOS field, or any existing published menu profile. If a published profile
+still uses the old ROM, cleanup waits until a successful publication replaces
+that profile. Unrelated files are never swept.
 
-The old ROM is kept if conversion, copying or saving fails. Reimporting the same
-file does not delete it. If cleanup fails after a successful import and save,
-the editor reports that the new ROM is active but the old file was kept.
+Failed imports or saves keep the old ROM. Identical imports reuse the existing
+file. Cleanup failures leave a retryable queue in `.rom-cleanup.json`.
+
+See [shared ROM storage](shared-rom-storage.md) for migration and compatibility.

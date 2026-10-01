@@ -181,3 +181,15 @@ test('The operation remains locked through saving and cleanup',async()=>{
     assert.equal(t.element('app').inert,false);
     assert.equal(vm.runInContext('operationBusy',t.context),false);
 });
+
+test('ROM picker lists the shared pool including packed SuperGrafx ROMs',async()=>{
+    const t=setup(async()=>['CD.pcd','Cart.pce.m','Super.sgx.m','cover.png']);
+    const options=[];
+    t.element('rom-datalist').appendChild=option=>options.push(option.value);
+    t.context.document.createElement=()=>({});
+    const code=app.slice(app.indexOf('async function populateRomDatalist('),app.indexOf('// ---- Folder cover import ----'));
+    vm.runInContext(code,t.context);
+    await t.context.populateRomDatalist(t.entry);
+    assert.equal(t.calls[0].args.folderPath,'/key/library/published/roms');
+    assert.deepEqual(options,['CD.pcd','Cart.pce.m','Super.sgx.m']);
+});

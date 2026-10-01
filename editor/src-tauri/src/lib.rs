@@ -347,19 +347,21 @@ fn resolve_library_paths(picked: &Path) -> (PathBuf, PathBuf, PathBuf) {
 }
 
 #[tauri::command]
-fn load_library(games_path: String) -> Result<DualLibrary, String> {
-    let (library_root, _, _) = resolve_library_paths(Path::new(&games_path));
-
-    let jp = load_lineup(&library_root.join("jp"));
-    let us = load_lineup(&library_root.join("us"));
-
-    Ok(DualLibrary {
-        jp,
-        us,
-        // Preserve the resolved library_root in `path` — downstream commands
-        // (save_library, get_cover, import_*) all key off it.
-        path: library_root.to_string_lossy().into_owned(),
-    })
+async fn load_library(games_path: String, on_progress: tauri::ipc::Channel<m2_import::Progress>) -> Result<DualLibrary, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (library_root, _, _) = resolve_library_paths(Path::new(&games_path));
+        m2_publish::rom_store::migrate_with_progress(&library_root, &|name, completed, total| {
+            let _ = on_progress.send(m2_import::Progress {
+                message: format!("Checking shared ROM storage: {name}"),
+                completed: Some(completed as u64), total: Some(total as u64),
+            });
+        }).map_err(|e| format!("ROM migration stopped; no unverified source was deleted: {e}"))?;
+        Ok(DualLibrary {
+            jp: load_lineup(&library_root.join("jp")),
+            us: load_lineup(&library_root.join("us")),
+            path: library_root.to_string_lossy().into_owned(),
+        })
+    }).await.map_err(|e| format!("Library opening stopped: {e}"))?
 }
 
 #[tauri::command]

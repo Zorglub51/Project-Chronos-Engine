@@ -7,7 +7,7 @@
 //     gamelist.json                          ← [{folder, sor_*}], includes BOTH games and folders
 //     <gameDirName>/                         ← regular game (folder name does NOT start with "FOLDER")
 //       game.json                            ← display, emulator, rom, cover, cover_size
-//       <rom_filename>                       ← e.g. KungFu_J.pce
+//       <rom_filename>                       ← legacy only; migrated to published/roms
 //       cover.png
 //       sram.bin                             ← 8448 B; one slot of _92_sram_datas (per-game)
 //       saves/                               ← per-game save states
@@ -129,7 +129,7 @@ pub struct Game {
 }
 
 impl Game {
-    pub fn rom_path(&self) -> PathBuf { self.source_dir.join(&self.data.rom.rom) }
+    pub fn rom_path(&self) -> PathBuf { crate::rom_store::resolve(&self.source_dir, &self.data.rom.rom) }
     pub fn cover_path(&self) -> PathBuf {
         let f = self.data.cover.clone().unwrap_or_else(|| "cover.png".into());
         self.source_dir.join(f)

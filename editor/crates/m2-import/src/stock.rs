@@ -225,13 +225,20 @@ fn extract_games(source: &Source, library: &Path, templates: &[&str; 4], progres
             let dest = dir.join(tag);
             fs::create_dir(&dest)?;
             let rom_name = format!("system/roms/{filename}");
-            if source.size(&rom_name).is_some() {
-                source.copy(&rom_name, &dest.join(filename))?;
-            } else {
-                let packed = format!("{rom_name}.m");
-                let bytes = source.read(&packed, 32 * 1024 * 1024)?;
-                let data = m2_mzs::unpack_default(&bytes, &format!("{filename}.m"))?;
-                fs::write(dest.join(filename), data)?;
+            let pool = m2_publish::rom_store::checked_pool(library)?;
+            let console_name = m2_publish::rom_store::console_name(filename)?;
+            if !pool.join(&console_name).exists() {
+                if source.size(&rom_name).is_some() {
+                    if console_name == filename {
+                        source.copy(&rom_name, &pool.join(filename))?;
+                    } else {
+                        let bytes = source.read(&rom_name, 32 * 1024 * 1024)?;
+                        fs::write(pool.join(&console_name), m2_mzs::pack_default(&bytes, &console_name)?)?;
+                    }
+                } else {
+                    // Keep the original encrypted HuCard archive unchanged.
+                    source.copy(&format!("{rom_name}.m"), &pool.join(&console_name))?;
+                }
             }
             let (width, height) = save_cover(
                 &covers,

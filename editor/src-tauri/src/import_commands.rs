@@ -28,7 +28,7 @@ pub async fn import_rom(
     on_progress: Channel<Progress>,
 ) -> Result<m2_import::ImportResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        m2_import::import_rom(
+        m2_import::import_library_rom(
             Path::new(&src_path),
             Path::new(&dest_dir),
             bios.as_ref(),

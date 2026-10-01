@@ -809,7 +809,8 @@ async function loadLibrary(path) {
             console.warn('sync_library failed (continuing):', e);
         }
 
-        dualLibrary = await invoke('load_library', { gamesPath: path });
+        dualLibrary = await runOperation('Open library — check ROM storage', onProgress =>
+            invoke('load_library', { gamesPath: path, onProgress }));
         await loadGamesSettings(path);
         coverCache = {};
         currentFolder = null;
@@ -1773,15 +1774,14 @@ async function importRomFile(srcPath, dataPath, inputEl) {
 async function populateRomDatalist(entry) {
     const datalist = document.getElementById('rom-datalist');
     datalist.innerHTML = '';
-    const folderPrefix = currentFolder ? currentFolder.name + '/' : '';
-    const folderPath = dualLibrary.path + '/' + currentLineup + '/' + folderPrefix + entry.folder;
+    const folderPath = dualLibrary.path + '/published/roms';
     try {
         const files = await invoke('list_files_in_folder', {
             folderPath,
             extensions: ['pce', 'PCE', 'm', 'M', 'sgx', 'SGX', 'pcd', 'PCD']
         });
         for (const f of files) {
-            if (!/\.(pce(?:\.m)?|sgx|pcd)$/i.test(f)) continue;
+            if (!/\.(pce(?:\.m)?|sgx(?:\.m)?|pcd)$/i.test(f)) continue;
             const opt = document.createElement('option');
             opt.value = f;
             datalist.appendChild(opt);

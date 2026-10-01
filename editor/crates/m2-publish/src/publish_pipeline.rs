@@ -59,7 +59,7 @@ pub struct PublishReport {
 }
 
 pub fn publish(opts: &PublishOptions) -> Result<PublishReport, Error> {
-    let library = crate::library::load(&opts.library_root)?;
+
     let templates = Templates::new(&opts.stock_data_root)?;
     // Reject a different console runtime before changing published files.
     if let Some(root) = crate::usb::usb_root(&opts.output_root) {
@@ -71,6 +71,8 @@ pub fn publish(opts: &PublishOptions) -> Result<PublishReport, Error> {
             }
         }
     }
+    crate::rom_store::migrate(&opts.library_root)?;
+    let library = crate::library::load(&opts.library_root)?;
     let fonts = crate::fonts::prepare(&library, &opts.library_root, &opts.stock_data_root)?;
 
     let mut report = PublishReport::default();
@@ -95,6 +97,11 @@ pub fn publish(opts: &PublishOptions) -> Result<PublishReport, Error> {
     }
     report.psb_files_written += fonts.len();
 
+    if opts.output_root == opts.library_root.join("published") {
+        if let Err(e) = crate::rom_store::cleanup(&opts.library_root) {
+            eprintln!("WARN: old ROM cleanup deferred: {e}");
+        }
+    }
     Ok(report)
 }
 
@@ -109,6 +116,31 @@ mod rom_tests {
     struct Temp(PathBuf);
     impl Drop for Temp {
         fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+    }
+
+    #[test]
+    fn publishing_shared_roms_never_copies_a_file_onto_itself() {
+        let temp = tempfile::tempdir().unwrap(); let root = temp.path();
+        let source_dir = root.join("jp/GAME"); fs::create_dir_all(&source_dir).unwrap();
+        fs::write(root.join("jp/gamelist.json"), "[]").unwrap();
+        let pool = crate::rom_store::checked_pool(root).unwrap();
+        fs::write(pool.join("disc.pcd"), b"valid CD bytes remain intact").unwrap();
+        let game = Game {
+            dir_name: "GAME".into(), region_tag: "GAME".into(),
+            data: GameJson { rom: GameRom { arch: "tg16cd".into(), rom: "disc.pcd".into(), ..Default::default() }, ..Default::default() },
+            sort: Default::default(), source_dir,
+        };
+        let library = Library {
+            jp: Lineup { root_entries: vec![LineupEntry::Game(game)], source_dir: root.join("jp") },
+            us: Lineup { root_entries: vec![], source_dir: root.join("us") },
+        };
+        let mut report = PublishReport::default();
+        for _ in 0..2 { pack_roms(&library, &root.join("published"), &mut report).unwrap(); }
+        assert_eq!(report.roms_copied, 0);
+        assert_eq!(fs::read(pool.join("disc.pcd")).unwrap(), b"valid CD bytes remain intact");
+        pack_roms(&library, &root.join("export"), &mut report).unwrap();
+        assert_eq!(report.roms_copied, 1);
+        assert_eq!(fs::read(root.join("export/roms/disc.pcd")).unwrap(), fs::read(pool.join("disc.pcd")).unwrap());
     }
 
     #[test]
@@ -219,6 +251,9 @@ fn pack_roms(library: &Library, output_root: &Path, report: &mut PublishReport) 
                 report.roms_packed += 1;
             } else {
                 let dst = roms_out.join(&out_name);
+                if dst.exists() && std::fs::canonicalize(&rom_src)? == std::fs::canonicalize(&dst)? {
+                    continue;
+                }
                 std::fs::copy(&rom_src, &dst).map_err(|e| {
                     std::io::Error::new(e.kind(), format!("copy ROM {} -> {}: {}", rom_src.display(), dst.display(), e))
                 })?;

@@ -22,3 +22,5 @@ md-5 = "0.10"
 image = { version = "0.25", default-features = false, features = ["png"] }
 ttf-parser = "0.25"
 tiny-skia = { version = "0.11", default-features = false, features = ["std"] }
+
+tempfile = "3"

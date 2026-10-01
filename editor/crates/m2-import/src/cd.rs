@@ -159,7 +159,7 @@ pub fn import_rom(
     let packed_hucard = name
         .to_string_lossy()
         .to_ascii_lowercase()
-        .ends_with(".pce.m");
+        .ends_with(".pce.m") || name.to_string_lossy().to_ascii_lowercase().ends_with(".sgx.m");
     ensure!(
         packed_hucard || ["cue", "pcd", "pce", "sgx", "bin"].contains(&extension.as_str()),
         "Unsupported ROM format: {extension}"
@@ -204,6 +204,10 @@ pub fn import_rom(
     }
     fs::create_dir_all(destination)?;
     let mut output = destination.join(name);
+    if packed_hucard && destination.file_name().is_some_and(|n| n == "roms")
+        && destination.parent().and_then(|p| p.file_name()).is_some_and(|n| n == "published") {
+        output = destination.join(m2_publish::rom_store::console_name(&name.to_string_lossy())?);
+    }
     if converted {
         output.set_extension("pcd");
     }
@@ -211,22 +215,23 @@ pub fn import_rom(
         // MZS encryption depends on the basename. Reuse identical archives;
         // never silently rename or replace a different archive on collision.
         ensure!(same_file_contents(source, &output)?,
-            "A different HuCard named '{}' already exists in this game folder. .pce.m archives must keep their original filename; choose another game folder.",
+            "A different HuCard named '{}' already exists in the ROM store. Packed HuCard archives must keep their original filename; choose a different original archive.",
             name.to_string_lossy());
         report(progress, "ROM already imported", Some((1, 1)));
         return Ok(ImportResult {
-            filename: name.to_string_lossy().into(),
+            filename: output.file_name().unwrap().to_string_lossy().into(),
             converted,
             cd,
         });
     }
-    if !converted && output.exists() && fs::canonicalize(source)? == fs::canonicalize(&output)? {
+    if !converted && output.exists() && same_file_contents(source, &output)? {
         return Ok(ImportResult {
-            filename: name.to_string_lossy().into(),
+            filename: output.file_name().unwrap().to_string_lossy().into(),
             converted,
             cd,
         });
     }
+    let original_output = output.clone();
     let stem = output.file_stem().unwrap().to_string_lossy().to_string();
     let ext = output.extension().unwrap().to_string_lossy().to_string();
     let mut suffix = 2;
@@ -283,6 +288,10 @@ pub fn import_rom(
         }
     }
     temporary.as_file().sync_all()?;
+    if converted && original_output.exists() && same_file_contents(temporary.path(), &original_output)? {
+        report(progress, "ROM already imported", Some((1, 1)));
+        return Ok(ImportResult { filename: original_output.file_name().unwrap().to_string_lossy().into(), converted, cd });
+    }
     temporary
         .persist_noclobber(&output)
         .with_context(|| format!("Save imported ROM to {}", output.display()))?;

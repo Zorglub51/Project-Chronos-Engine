@@ -1,4 +1,4 @@
-name: Build editor
+name: Editor frontend checks
 
 on:
   push:
@@ -10,87 +10,37 @@ on:
     branches: [main]
     paths:
       - 'editor/**'
+      - '.github/workflows/build.yml'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+# Native builds and Rust tests run in the private pce-pcd-rust repository.
+# Its Build Chronos editor workflow checks out this public repository and
+# resolves the pinned converter revision locally, without a cross-repo secret.
 jobs:
-  build-windows:
-    name: Windows .exe
-    runs-on: windows-latest
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: editor
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cargo cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: editor -> target
-
-      - name: npm install
-        run: npm install
-
-      - name: Build (release)
-        run: npx tauri build
-
-      - name: Upload editor exe
-        uses: actions/upload-artifact@v4
-        with:
-          name: project-chronos-engine-editor-windows
-          path: |
-            editor/target/release/pce-game-editor.exe
-            editor/target/release/bundle/nsis/*.exe
-            editor/target/release/bundle/msi/*.msi
-          if-no-files-found: error
-
-  build-macos:
-    name: macOS .app
-    runs-on: macos-latest
-    defaults:
-      run:
-        working-directory: editor
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
-
-      - name: Cargo cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: editor -> target
-
-      - name: npm install
-        run: npm install
-
-      - name: Build (release, universal)
-        run: npx tauri build --target universal-apple-darwin
-
-      - name: Zip .app bundle
+          node-version: '22'
+      - run: npm ci
+      - run: node --test tests/*.test.cjs
+      - name: Explain native build location
         run: |
-          cd target/universal-apple-darwin/release/bundle/macos
-          zip -ry "PCE-Game-Editor-macos-universal.zip" "PCE Game Editor.app"
+          cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          ## Editor validation
+          Frontend tests ran in this public repository. This check does not compile the native application.
 
-      - name: Upload editor app
-        uses: actions/upload-artifact@v4
-        with:
-          name: project-chronos-engine-editor-macos
-          path: |
-            editor/target/universal-apple-darwin/release/bundle/macos/PCE-Game-Editor-macos-universal.zip
-            editor/target/universal-apple-darwin/release/bundle/dmg/*.dmg
-          if-no-files-found: error
+          Native builds and Rust tests run on demand in the private `pce-pcd-rust` repository,
+          where the pinned converter dependency is accessible. Published downloads are available
+          on the [release page](https://github.com/Zorglub51/Project-Chronos-Engine/releases).
+          See [CI and release builds](https://github.com/Zorglub51/Project-Chronos-Engine/blob/main/docs/CI.md) for the workflow split.
+          EOF

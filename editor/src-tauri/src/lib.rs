@@ -84,11 +84,9 @@ pub struct GameJson {
     pub cover: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cover_size: Option<CoverSize>,
-    // `genre` removed from the editor for now (kept in retail PSBs only
-    // when present in the source title_mode_top). Re-enable when we wire
-    // genre editing into the UI.
-    // #[serde(default, skip_serializing_if = "Option::is_none")]
-    // pub genre: Option<u32>,
+    // Editor genre IDs are persisted independently of console publication.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub genre: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -221,6 +219,7 @@ fn load_lineup(lineup_path: &Path) -> Library {
                 },
                 cover: Some("cover.png".to_string()),
                 cover_size: None,
+                genre: None,
             };
 
             games.push(GameEntry {
@@ -530,6 +529,7 @@ fn create_game(
         },
         cover: Some("cover.png".to_string()),
         cover_size: None,
+        genre: None,
     };
 
     let game_json = serde_json::to_string_pretty(&game)
@@ -1179,4 +1179,56 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod genre_persistence_tests {
+    use super::*;
+
+    #[test]
+    fn genres_and_sort_order_survive_reopening_without_publication() {
+        let root = tempfile::tempdir().unwrap();
+        let root_str = root.path().to_str().unwrap().to_owned();
+        save_games_settings(root_str.clone(), GamesSettings {
+            genres: vec!["Action".into(), "RPG".into()],
+            alpha_exclusions: vec![],
+        }).unwrap();
+        // Exercise both root lineups and the same save/load path used by folders.
+        for lineup in ["jp", "us", "jp/HuCard"] {
+            let mut first = create_game(root_str.clone(), lineup.into(), "GAME001".into()).unwrap();
+            let mut second = create_game(root_str.clone(), lineup.into(), "GAME002".into()).unwrap();
+            // Deserialize the frontend payload, as the save command does.
+            let mut payload = serde_json::to_value(&first.game).unwrap();
+            payload["genre"] = serde_json::json!(2);
+            first.game = serde_json::from_value(payload).unwrap();
+            second.game.genre = Some(1);
+            first.sort.sor_genr = 1;
+            second.sort.sor_genr = 0;
+            let path = root.path().join(lineup);
+            save_lineup(&path, &Library {
+                games: vec![first, second], path: path.to_string_lossy().into_owned(),
+            }).unwrap();
+            let mut reopened = load_lineup(&path);
+            assert_eq!(reopened.games.len(), 2);
+            assert_eq!(reopened.games[0].game.genre, Some(2));
+            assert_eq!(reopened.games[1].game.genre, Some(1));
+            assert_eq!(reopened.games[0].sort.sor_genr, 1);
+            assert_eq!(reopened.games[1].sort.sor_genr, 0);
+            // Clearing a genre must also survive another reopen.
+            reopened.games[0].game.genre = None;
+            save_lineup(&path, &reopened).unwrap();
+            assert_eq!(load_lineup(&path).games[0].game.genre, None);
+        }
+        assert_eq!(load_games_settings(root_str).unwrap().genres, ["Action", "RPG"]);
+        assert!(!root.path().join("published").exists());
+    }
+
+    #[test]
+    fn legacy_games_without_genre_remain_readable() {
+        let game: GameJson = serde_json::from_value(serde_json::json!({
+            "display": {"name": "Legacy game"}, "rom": {}
+        })).unwrap();
+        assert_eq!(game.genre, None);
+        assert!(serde_json::to_value(game).unwrap().get("genre").is_none());
+    }
 }

@@ -1045,3 +1045,53 @@ button:hover, .btn:hover {
 #operation-overlay { z-index: 3000; }
 #operation-progress { width: 100%; height: 18px; }
 #operation-message, #bios-source { overflow-wrap: anywhere; }
+
+/* Console storage management */
+.sidebar-navigation { display:flex; align-items:center; gap:6px; }
+.welcome-console-option { display:flex; flex-direction:column; align-items:center; gap:8px; padding-top:18px; margin-top:4px; border-top:1px solid var(--border); }
+.welcome-console-option small { font-size:12px; }
+.partitions-panel { width:100%; max-width:1000px; margin:0 auto; padding-bottom:32px; }
+.partition-card { padding:18px; margin-bottom:16px; border:1px solid var(--border); border-radius:var(--radius-lg); background:var(--bg-secondary); }
+.partition-card h3 { font-size:15px; margin-bottom:10px; }
+.partition-card-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px; }
+.partition-card-heading h3 { margin-bottom:0; }
+.partition-card .setting-hint { margin:8px 0; line-height:1.6; }
+.partition-connection-status { font-size:14px; font-weight:600; margin-top:12px; }
+.partition-connection-status[data-state="ready"], .partition-result { color:#7bd7ac; }
+.partition-connection-status[data-state="unavailable"] { color:#f3b965; }
+.partition-table-scroll { overflow-x:auto; margin-top:14px; }
+.partition-table { width:100%; border-collapse:collapse; font-size:13px; }
+.partition-table th { text-align:left; color:var(--text-muted); font-size:12px; font-weight:500; }
+.partition-table th, .partition-table td { padding:10px 8px; border-bottom:1px solid var(--border); }
+.partition-table th:first-child, .partition-table td:first-child { width:70px; text-align:center; }
+.partition-table th:last-child, .partition-table td:last-child { text-align:right; white-space:nowrap; }
+.partition-table label { display:block; cursor:pointer; }
+.partition-table .partition-full-row td { border-top:2px solid var(--border); }
+.partition-table input[type="checkbox"], .partition-confirm-label input { width:16px; height:16px; accent-color:var(--accent); flex-shrink:0; }
+.partition-actions { display:flex; justify-content:flex-end; align-items:center; gap:12px; margin-top:16px; }
+.partition-actions .setting-hint { margin-right:auto; }
+.partition-restore-source { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-top:14px; }
+.partition-restore-source label { font-size:13px; }
+.partition-restore-source select { min-width:240px; flex:1; }
+.partition-restore-review { border-top:1px solid var(--border); margin-top:18px; padding-top:16px; }
+.partition-image-details { display:grid; grid-template-columns:110px minmax(0,1fr); gap:10px 12px; font-size:13px; }
+.partition-image-details dt { color:var(--text-muted); }
+.partition-image-details dd { overflow-wrap:anywhere; }
+#partition-image-sha256 { font-family:monospace; font-size:12px; }
+#partition-archive-choice { margin-top:16px; }
+#partition-archive-choice label { font-size:13px; margin-right:12px; }
+#partition-image-member { width:100%; margin-top:8px; }
+.partition-restore-warning { color:#f3b965; font-size:13px; line-height:1.6; margin-top:16px; }
+.partition-confirm-label { display:flex; align-items:flex-start; gap:10px; font-size:13px; margin-top:12px; line-height:1.5; }
+.partition-confirm-label input { margin-top:2px; }
+#partition-operation-progress { display:block; width:100%; height:18px; margin:12px 0; accent-color:var(--accent); }
+#partition-operation-message, #partition-result, #partition-error { overflow-wrap:anywhere; line-height:1.6; }
+.partitions-panel button:disabled { opacity:.45; cursor:default; }
+.partitions-panel button:disabled:hover { color:inherit; border-color:var(--border); }
+@media (max-width:700px) {
+    .partition-card { padding:12px; }
+    .partition-card-heading { align-items:flex-start; }
+    .partition-restore-source { align-items:stretch; flex-direction:column; }
+    .partition-image-details { grid-template-columns:90px minmax(0,1fr); }
+    .partition-actions { flex-wrap:wrap; }
+}

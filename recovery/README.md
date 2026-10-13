@@ -95,8 +95,9 @@ Replace `INTERFACE` with the recovery USB interface displayed by the application
 
 Only one recovery/network/partition operation runs at a time. The remote
 partition size is checked against the expected layout before a transfer. A
-restore also requires a RAM-root recovery and an unmounted target. Full-device
-restores reject any mounted eMMC partition.
+backup or restore requires a RAM-root recovery and an unmounted target. Full-device
+transfers reject any mounted eMMC partition. Device numbers from the kernel's
+mount table detect aliases and bind mounts as well as named block devices.
 
 Existing backup files are not overwritten. A dump is written to a temporary file
 in the destination directory, checked against the console, and only then renamed

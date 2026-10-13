@@ -6,7 +6,7 @@ A modding toolkit for the PC Engine Mini / TurboGrafx-16 Mini console that lets 
 
 | Directory | Role |
 |---|---|
-| `editor/` | Tauri + Rust GUI app to assemble a custom game lineup, manage covers, set arch/country/players, and publish a library to a USB stick. |
+| `editor/` | Tauri + Rust GUI app to edit game libraries and manage console MMC backups and partition restores. |
 | `console-mod/` | The shell scripts + udev rule + `gameapp` replacement that get installed on the console once. Provides USB detection, hot-plug, bind-mount swap, and the conditional `LD_PRELOAD` of the hook. |
 | `console-mod/hook-src/` | C source for `m2hook_print.so` — the LD_PRELOAD shim that intercepts Squirrel scripting calls inside `m2engage` to enable runtime path overrides, SRAM splicing, and the lineup-switch UX. |
 | `mod-assets/` | Pre-built artefacts the editor and the installer pull in at publish/install time: the cross-compiled hook `.so`, patched `.nut.m` scripts, and human-readable `.nut` sources. |
@@ -14,6 +14,12 @@ A modding toolkit for the PC Engine Mini / TurboGrafx-16 Mini console that lets 
 | `installer/` | *(future)* The console-side install tool that backs up stock NAND, deploys `console-mod/` to the right paths, edits `inittab`, and prepares the USB stick's `BACKUP/` directory. |
 
 ## High level flow
+
+The home screen also offers **Console backups and partitions…**. It supports
+verified selected-partition or full-MMC backups and raw/ZIP restoration with
+explicit destination confirmation. Start RAM recovery and connect its USB
+network using the existing recovery utility first; the transfer code is linked
+directly into the editor. See [console partition management](editor/docs/console-partitions.md).
 
 1. **One-time on the console:** install the files documented in [console-mod](console-mod/README.md), preserving the original `gameapp`. The automated installer is still planned.
 2. **On the Mac (or any computer):** open the editor, build a custom library (add games, ROMs, covers), click Publish. The editor writes the library under `library/published/` and installs its bundled Chronos scripts and hook under `game/`.
@@ -171,16 +177,28 @@ offsets so a save stays associated with its game.
 Requires Rust, Node.js and a C/C++ toolchain (Xcode Command Line Tools on macOS).
 The CD converter links libopus and liblz4; CMake is needed when building the
 bundled Opus library. The initial Cargo build fetches the pinned converter
-source. The dump reader uses [ext4-view](https://docs.rs/ext4-view/0.9.3/ext4_view/)
+source and requires read access to the private `pce-pcd-rust` repository.
+The dump reader uses [ext4-view](https://docs.rs/ext4-view/0.9.3/ext4_view/)
 in read-only mode.
 
 ```sh
 cd editor
-npm install
+npm ci
 npm run build
 ```
 
-Output: `editor/target/release/bundle/macos/PCE Game Editor.app` on macOS, or `editor/target/release/pce-game-editor.exe` on Windows. CI builds for both via [GitHub Actions](./.github/workflows/build.yml).
+Output: `editor/target/release/bundle/macos/PCE Game Editor.app` on macOS.
+Windows builds also produce an NSIS `*-setup.exe` installer in
+`editor/target/release/bundle/nsis/`, alongside `editor/target/release/pce-game-editor.exe`.
+See [Windows installation and builds](docs/WINDOWS.md).
+
+The public [GitHub Actions workflow](./.github/workflows/build.yml) tests the
+frontend. Native Windows/macOS builds and Rust tests run in **Build Chronos
+editor** in the private converter repository, preserving its confidentiality.
+That workflow accepts an editor commit/tag/branch and produces downloadable
+artifacts. The previous public release workflow has been removed: public tags
+do not automatically publish installers. An owner can publish selected,
+validated binaries separately after downloading the private build artifacts.
 
 Checks for USB publication and mount lifecycle (no console required):
 

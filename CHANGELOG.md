@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Add a home-screen console partition manager, with verified individual,
+  selected-partition and full-MMC backups and raw/ZIP restoration.
+- Stage restore images with bounded memory, validate their full size/CRC and
+  checksum, and require confirmation of the selected partition and image.
+- Reuse the recovery transport, with RAM-recovery and mounted-device checks,
+  single-operation locking and transfer progress. Recovery startup currently
+  uses the existing recovery utility.
+
 ## 1.0 alpha — editor revision 6 (2026-10-12)
 
 ### Fixed

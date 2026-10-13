@@ -6,7 +6,10 @@
 //! pointless). Exposes a single `exec(cmd)` that runs a remote command and
 //! returns its stdout/stderr/exit_status.
 
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::Duration;
 
 use russh::client::{Config, Handler, Msg};
@@ -24,6 +27,8 @@ pub enum SshError {
     Ssh(#[from] russh::Error),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+    #[error("SSH transfer cancelled after local I/O failure")]
+    Cancelled,
 }
 
 pub type Result<T> = std::result::Result<T, SshError>;
@@ -43,6 +48,53 @@ pub struct ExecOutput {
 pub fn exec(host: &str, command: &str) -> Result<ExecOutput> {
     let rt = Runtime::new().map_err(SshError::Io)?;
     rt.block_on(exec_async(host, command))
+}
+
+/// Bound the complete SSH exchange for short cleanup/status commands. Large
+/// partition checksum commands continue using the normal inactivity timeout.
+pub fn exec_timeout(host: &str, command: &str, timeout: Duration) -> Result<ExecOutput> {
+    let rt = Runtime::new().map_err(SshError::Io)?;
+    rt.block_on(async {
+        tokio::time::timeout(timeout, exec_async(host, command))
+            .await
+            .map_err(|_| SshError::Connect("SSH command timed out".into()))?
+    })
+}
+
+/// Listener worker variant: cancellation also interrupts connection/auth and
+/// waiting for remote EOF, so a disconnected USB cable cannot leave a local
+/// operation waiting for the ten-minute SSH inactivity timeout.
+pub fn exec_cancellable(
+    host: &str,
+    command: &str,
+    cancelled: Arc<AtomicBool>,
+) -> Result<ExecOutput> {
+    let rt = Runtime::new().map_err(SshError::Io)?;
+    rt.block_on(async {
+        tokio::select! {
+            biased;
+            _ = async {
+                loop {
+                    if cancelled.load(Ordering::Acquire) { break; }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            } => Err(SshError::Cancelled),
+            result = exec_async(host, command) => result,
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn cancelled_worker_returns_without_opening_a_connection() {
+        let cancelled = Arc::new(AtomicBool::new(true));
+        assert!(matches!(
+            exec_cancellable("", "", cancelled),
+            Err(SshError::Cancelled)
+        ));
+    }
 }
 
 async fn exec_async(host: &str, command: &str) -> Result<ExecOutput> {

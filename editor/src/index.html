@@ -13,7 +13,7 @@
             <div class="sidebar-header">
                 <div class="sidebar-header-row">
                     <h1>PCE Game Editor</h1>
-                    <button class="btn-gear" id="btn-settings" title="Settings">&#9881;</button>
+                    <div class="sidebar-navigation"><button class="btn-small" id="btn-home">Home</button><button class="btn-gear" id="btn-settings" title="Settings">&#9881;</button></div>
                 </div>
                 <p id="library-stats">No library loaded</p>
             </div>
@@ -46,6 +46,79 @@
                 <button id="btn-recent-library" style="display:none">Continue with the last library</button>
                 <small id="recent-library-path"></small>
                 <button id="btn-start-settings">Settings / CD BIOS</button>
+                <div class="welcome-console-option">
+                    <button id="btn-console-partitions">Console backups and partitions…</button>
+                    <small>Back up or restore the console’s internal storage</small>
+                </div>
+            </div>
+
+            <!-- Console storage manager. Opening this page does not modify the console. -->
+            <div class="partitions-panel" id="console-panel" style="display:none">
+                <div class="settings-header">
+                    <h2>Console backups and partitions</h2>
+                    <button id="btn-partitions-close">Back to home</button>
+                </div>
+                <div class="partition-card">
+                    <div class="partition-card-heading">
+                        <h3>Connection</h3>
+                        <button id="btn-partitions-refresh">Check connection</button>
+                    </div>
+                    <p id="partition-connection-status" class="partition-connection-status" role="status" aria-live="polite">Connection not checked</p>
+                    <p id="partition-connection-detail" class="setting-hint">Connect the console’s micro-USB port with a data cable. Start RAM recovery with the recovery utility, then connect its USB network at 169.254.13.37.</p>
+                    <p class="setting-hint">Backups and restores require the console’s RAM recovery environment. Keep the console powered and connected until the operation finishes.</p>
+                </div>
+                <div class="partition-card">
+                    <div class="partition-card-heading">
+                        <h3>Back up internal storage</h3>
+                        <button id="btn-partitions-select-all">Select all partitions</button>
+                    </div>
+                    <p class="setting-hint">Choose partitions for separate image files, or select the full MMC for a single complete backup. Each backup is verified before it is saved.</p>
+                    <div class="partition-table-scroll">
+                        <table class="partition-table">
+                            <thead><tr><th scope="col">Back up</th><th scope="col">Partition</th><th scope="col">Contents</th><th scope="col">Size</th></tr></thead>
+                            <tbody id="partition-table-body"></tbody>
+                        </table>
+                    </div>
+                    <div class="partition-actions">
+                        <span id="partition-selection-status" class="setting-hint">No partitions selected</span>
+                        <button class="btn-primary" id="btn-partitions-backup" disabled>Back up selected…</button>
+                    </div>
+                </div>
+                <div class="partition-card">
+                    <h3>Restore an image</h3>
+                    <p class="setting-hint">Choose a raw partition image or ZIP archive. The image must match the selected partition’s size.</p>
+                    <div class="partition-restore-source">
+                        <label for="partition-restore-target">Destination</label>
+                        <select id="partition-restore-target"><option value="">Choose a partition…</option></select>
+                        <button id="btn-partitions-image" disabled>Choose image…</button>
+                    </div>
+                    <div id="partition-restore-review" class="partition-restore-review" hidden>
+                        <dl class="partition-image-details">
+                            <dt>Image file</dt><dd id="partition-image-path"></dd>
+                            <dt>Destination</dt><dd id="partition-image-target"></dd>
+                            <dt>Image size</dt><dd id="partition-image-size"></dd>
+                            <dt>SHA-256</dt><dd id="partition-image-sha256">Not verified yet</dd>
+                        </dl>
+                        <div id="partition-archive-choice" hidden>
+                            <label for="partition-image-member">Image inside the ZIP</label>
+                            <select id="partition-image-member"></select>
+                        </div>
+                        <p id="partition-restore-warning" class="partition-restore-warning"></p>
+                        <label class="partition-confirm-label"><input type="checkbox" id="partition-restore-confirm"><span id="partition-restore-confirm-text">Replace the selected partition’s contents</span></label>
+                        <div class="partition-actions">
+                            <button id="btn-partitions-image-cancel">Cancel</button>
+                            <button class="btn-danger" id="btn-partitions-restore" disabled>Restore partition</button>
+                        </div>
+                    </div>
+                </div>
+                <div id="partition-operation" class="partition-card" hidden>
+                    <h3 id="partition-operation-title"></h3>
+                    <p id="partition-operation-message" role="status" aria-live="polite"></p>
+                    <progress id="partition-operation-progress"></progress>
+                    <p id="partition-operation-detail" class="setting-hint"></p>
+                </div>
+                <p id="partition-error" class="import-error" role="alert"></p>
+                <p id="partition-result" class="partition-result" role="status" aria-live="polite"></p>
             </div>
 
             <!-- Placeholder (shown when no game selected) -->
@@ -415,6 +488,7 @@
             <p class="setting-hint">Keep the editor open until this operation completes.</p>
         </div>
     </div>
+    <script src="partitions.js"></script>
     <script type="module" src="app.js"></script>
 </body>
 </html>

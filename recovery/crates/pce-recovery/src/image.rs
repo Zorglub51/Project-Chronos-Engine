@@ -5,7 +5,7 @@
 //! be handed to the partition writer.
 
 use std::fs::File;
-use std::io::{self, Read, Seek};
+use std::io::{self, Read, Seek, Write};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -137,6 +137,94 @@ pub fn inspect_image(
     Source::open(path)?.candidates(expected, allow_mismatch)
 }
 
+/// Stream a complete, bounded image into a caller-owned staging file. This
+/// operation is local only: the output must not be a console writer. Success
+/// includes the ZIP reader's EOF CRC check and exact uncompressed length, so
+/// callers can approve the immutable staged snapshot before restoring it.
+pub fn copy_image(
+    path: &Path,
+    expected: u64,
+    allow_mismatch: bool,
+    selection: Option<&ImageEntry>,
+    out: &mut impl Write,
+    on_progress: impl FnMut(u64),
+) -> Result<u64, ImageError> {
+    let mut source = Source::open(path)?;
+    let candidates = source.candidates(expected, allow_mismatch)?;
+    let selected = select_entry(&candidates, selection)?;
+    match source {
+        Source::Raw(file, _) => copy_verified(file, out, selected.size, on_progress),
+        Source::Zip(mut archive) => {
+            let file = archive.by_index(selected.zip_index.ok_or(ImageError::SelectionChanged)?)?;
+            copy_verified(file, out, selected.size, on_progress)
+        }
+    }
+}
+
+fn select_entry<'a>(
+    candidates: &'a [ImageEntry],
+    selection: Option<&ImageEntry>,
+) -> Result<&'a ImageEntry, ImageError> {
+    match selection {
+        Some(entry) => candidates
+            .iter()
+            .find(|item| *item == entry)
+            .ok_or(ImageError::SelectionChanged),
+        None if candidates.len() == 1 => Ok(&candidates[0]),
+        None => Err(ImageError::Ambiguous(
+            candidates
+                .iter()
+                .map(|entry| {
+                    format!(
+                        "{}: {} ({} bytes)",
+                        entry.zip_index.unwrap_or_default(),
+                        entry.name,
+                        entry.size
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
+        )),
+    }
+}
+
+fn copy_verified(
+    mut reader: impl Read,
+    out: &mut impl Write,
+    size: u64,
+    mut on_progress: impl FnMut(u64),
+) -> Result<u64, ImageError> {
+    let mut buffer = [0; 64 * 1024];
+    let mut transferred = 0;
+    on_progress(0);
+    loop {
+        // Force a final read after the expected size to check CRC and catch
+        // a dishonest size, without unbounded decompression or allocations.
+        let limit = (size - transferred)
+            .saturating_add(1)
+            .min(buffer.len() as u64) as usize;
+        let count = match reader.read(&mut buffer[..limit]) {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        if count == 0 {
+            break;
+        }
+        let actual = transferred + count as u64;
+        if actual > size {
+            return Err(ImageError::Size {
+                actual,
+                expected: size,
+            });
+        }
+        out.write_all(&buffer[..count])?;
+        transferred = actual;
+        on_progress(transferred);
+    }
+    check_size(transferred, size, false)?;
+    Ok(transferred)
+}
+
 /// Recheck the selection, then read the complete image and validate its CRC and
 /// exact length. A caller must wait for success before writing any bytes.
 /// `selection = None` is accepted only when precisely one image matches.
@@ -149,29 +237,7 @@ pub fn load_image(
 ) -> Result<Vec<u8>, ImageError> {
     let mut source = Source::open(path)?;
     let candidates = source.candidates(expected, allow_mismatch)?;
-    let selected = match selection {
-        Some(entry) => candidates
-            .iter()
-            .find(|item| *item == entry)
-            .ok_or(ImageError::SelectionChanged)?,
-        None if candidates.len() == 1 => &candidates[0],
-        None => {
-            return Err(ImageError::Ambiguous(
-                candidates
-                    .iter()
-                    .map(|entry| {
-                        format!(
-                            "{}: {} ({} bytes)",
-                            entry.zip_index.unwrap(),
-                            entry.name,
-                            entry.size
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            ))
-        }
-    };
+    let selected = select_entry(&candidates, selection)?;
     match source {
         Source::Raw(file, _) => read_verified(file, selected.size, on_progress),
         Source::Zip(mut archive) => {
@@ -223,6 +289,55 @@ mod tests {
     use super::*;
     use std::io::{Cursor, Write};
     use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
+
+    #[test]
+    fn streamed_staging_uses_bounded_buffers_and_checks_lengths() {
+        struct Generated(u64);
+        impl Read for Generated {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                assert!(buffer.len() <= 64 * 1024);
+                let count = self.0.min(buffer.len() as u64) as usize;
+                buffer[..count].fill(7);
+                self.0 -= count as u64;
+                Ok(count)
+            }
+        }
+        let size = 10 * 1024 * 1024;
+        let mut last = 0;
+        assert_eq!(
+            copy_verified(Generated(size), &mut io::sink(), size, |n| last = n).unwrap(),
+            size
+        );
+        assert_eq!(last, size);
+        assert!(copy_verified(Generated(11), &mut io::sink(), 10, |_| {}).is_err());
+        assert!(copy_verified(Generated(9), &mut io::sink(), 10, |_| {}).is_err());
+    }
+
+    #[test]
+    fn streamed_staging_validates_crc_and_selection_before_approval() {
+        let mut bytes = archive(&[("p7.bin", b"image")], CompressionMethod::Deflated, false);
+        let (_dir, path) = fixture("p7.zip", &bytes);
+        let selection = inspect_image(&path, 5, false).unwrap().remove(0);
+        let mut file = tempfile::tempfile().unwrap();
+        assert_eq!(
+            copy_image(&path, 5, false, Some(&selection), &mut file, |_| {}).unwrap(),
+            5
+        );
+        file.rewind().unwrap();
+        let mut staged = Vec::new();
+        file.read_to_end(&mut staged).unwrap();
+        assert_eq!(staged, b"image");
+        let central = bytes.windows(4).position(|b| b == b"PK\x01\x02").unwrap();
+        bytes[14] ^= 1;
+        bytes[central + 16] ^= 1;
+        std::fs::write(&path, bytes).unwrap();
+        let changed = inspect_image(&path, 5, false).unwrap().remove(0);
+        assert!(copy_image(&path, 5, false, Some(&changed), &mut io::sink(), |_| {}).is_err());
+        assert!(matches!(
+            copy_image(&path, 5, false, Some(&selection), &mut io::sink(), |_| {}),
+            Err(ImageError::SelectionChanged)
+        ));
+    }
 
     fn archive(entries: &[(&str, &[u8])], method: CompressionMethod, zip64: bool) -> Vec<u8> {
         let mut writer = ZipWriter::new(Cursor::new(Vec::new()));

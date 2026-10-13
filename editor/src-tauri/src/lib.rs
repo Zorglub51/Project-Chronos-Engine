@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use tauri::Manager;
 mod import_commands;
 mod font_commands;
+mod partition_commands;
 
 // --- Data structures matching game.json schema ---
 
@@ -1143,7 +1144,22 @@ fn publish_library(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .manage(partition_commands::PartitionState::default())
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.state::<partition_commands::PartitionState>().is_busy() {
+                    api.prevent_close();
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
+            partition_commands::console_partitions,
+            partition_commands::console_status,
+            partition_commands::console_backup,
+            partition_commands::console_inspect_image,
+            partition_commands::console_prepare_restore,
+            partition_commands::console_cancel_restore,
+            partition_commands::console_restore,
             font_commands::japanese_font,
             font_commands::title_preview,
             load_library,
@@ -1177,8 +1193,15 @@ pub fn run() {
             import_commands::get_bios_status,
             import_commands::create_library_from_dump,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                if app.state::<partition_commands::PartitionState>().is_busy() {
+                    api.prevent_exit();
+                }
+            }
+        });
 }
 
 #[cfg(test)]

@@ -12,6 +12,8 @@ let currentFolder = null;  // null or { lineup, name, parentGames }
 let editorSettings = { confirm_delete: true, games_path: null };
 let gamesSettings = { genres: [], alpha_exclusions: [] };
 let genreNames = ['\u2014']; // index 0 = unset, rest populated from settings
+let workspaceView = 'home';
+let partitionManager = null;
 
 // Current lineup helper
 function getLibrary() {
@@ -302,7 +304,7 @@ function openSettings() {
 
 function closeSettings() {
     document.getElementById('settings-panel').style.display = 'none';
-    document.getElementById(dualLibrary ? 'placeholder' : 'open-prompt').style.display = '';
+    document.getElementById(workspaceView === 'library' ? 'placeholder' : 'open-prompt').style.display = '';
 }
 
 // ---- Sort Editor ----
@@ -561,8 +563,44 @@ function initTitlePreview() {
     }));
 }
 
+// ---- Home and console workspace ----
+async function showHome() {
+    if (operationBusy || partitionManager?.isBusy()) return false;
+    try {
+        if (saveTimeout) clearTimeout(saveTimeout);
+        saveTimeout = null;
+        if (dualLibrary && workspaceView === 'library') await saveNow();
+    } catch (error) {
+        await modalAlert('Could not save the library: ' + error);
+        return false;
+    }
+    restoreParentLibrary();
+    selectedIndex = -1;
+    workspaceView = 'home';
+    for (const id of ['sidebar', 'lineup-tabs', 'folder-editor', 'settings-panel',
+        'sorting-panel', 'placeholder', 'console-panel']) {
+        document.getElementById(id).style.display = 'none';
+    }
+    document.getElementById('editor').classList.remove('active');
+    document.getElementById('open-prompt').style.display = '';
+    return true;
+}
+
+async function openConsolePartitions() {
+    if (!await showHome()) return;
+    workspaceView = 'console';
+    document.getElementById('open-prompt').style.display = 'none';
+    await partitionManager.open();
+}
+
 // ---- Init ----
 document.addEventListener('DOMContentLoaded', () => {
+    partitionManager = initPartitionManager({
+        invoke, dialog: window.__TAURI__.dialog, Channel: window.__TAURI__.core.Channel,
+        onClose: showHome,
+    });
+    document.getElementById('btn-console-partitions').addEventListener('click', openConsolePartitions);
+    document.getElementById('btn-home').addEventListener('click', showHome);
     document.getElementById('btn-open-folder').addEventListener('click', openFolder);
     document.getElementById('btn-add').addEventListener('click', addGame);
     document.getElementById('btn-add-folder').addEventListener('click', addFolder);
@@ -660,7 +698,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Keyboard navigation: up/down arrows to switch games
     document.addEventListener('keydown', (e) => {
-        if (operationBusy) return;
+        if (operationBusy || workspaceView !== 'library') return;
         if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
         if (document.getElementById('modal-overlay').classList.contains('visible')) return;
         const library = getLibrary();
@@ -812,6 +850,8 @@ async function loadLibrary(path) {
         dualLibrary = await runOperation('Open library — check ROM storage', onProgress =>
             invoke('load_library', { gamesPath: path, onProgress }));
         await loadGamesSettings(path);
+        workspaceView = 'library';
+        document.getElementById('console-panel').style.display = 'none';
         coverCache = {};
         currentFolder = null;
         currentLineup = "jp";

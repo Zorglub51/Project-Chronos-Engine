@@ -24,6 +24,9 @@ must not rename or copy save-state files.
   IDs must be unique and survive closing the editor.
 - Keep separate `menu_index`, `image_index` and `game_id`. An array position is
   never a persistent save identity.
+- Keep a separate stable ASCII `native_region_tag`, at most 14 bytes, because
+  native save payloads embed and validate this tag. Preserve existing tags
+  during migration; a full UUID cannot replace this native field.
 - Use a new versioned library format and an explicit migration from V1. Existing
   published packs remain available until the V2 migration and console tests pass.
 
@@ -40,6 +43,11 @@ Requests have a generation number. A failed or stale load retains the previous
 folder; a successful load commits the new snapshot atomically. Retain only the
 current folder and a small navigation stack, with bounded buffers and no
 whole-library resource cache.
+
+Initial native interface: `beginReadFolder(lineup, folderId)` returns a ticket;
+`pollReadFolder(ticket)` reports busy/ready/error; `takeFolder(ticket)` supplies
+the completed snapshot on the VM thread. Scope invalidation to dynamic
+catalogue/profile data and retain the static UI resource caches.
 
 The hook already registers native closures using `sq_pushroottable`,
 `sq_newclosure`, `sq_pushstring` and `sq_newslot`. Filling records requires
@@ -66,6 +74,16 @@ files and map the currently needed game data into the bounded native working
 set, with digest checks and flush/load timing preserved. Do not infer SRAM
 identity from `image_index` or menu position.
 
+Route existence checks, previews, deletion and temporary/atomic writes as well
+as save/load calls. A filename override that only handles the launched game
+does not correctly identify other games' menu previews. The native filename
+construction or backup I/O hook point still needs to be identified and tested.
+
+Migration must decode the last published pack's slot-to-game mapping rather
+than assume the current edited `gamelist.json` still has that order. Preserve
+original states/metadata, validate SRAM digest and active-pack ownership, and
+record an idempotent migration manifest. Ambiguous mappings must not be guessed.
+
 ## Graphics without folder publication
 
 Library metadata can be supplied by the custom class. Rendering still needs
@@ -77,6 +95,10 @@ is imported or changed in the editor. Load that per-game resource on demand.
 This preserves the native rendering path while eliminating aggregated folder
 cover packs and the manual Publish step. Treat these resources as reproducible
 per-game assets, with bounded active texture residency.
+
+Font bitmap resources also need automatic maintenance when a title gains new
+characters. The A33 does not render the bundled OpenType font directly: glyph
+generation must run on title edits, without a manual whole-library export.
 
 ## First vertical slice
 

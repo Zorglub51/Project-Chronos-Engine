@@ -6,9 +6,10 @@ The development tree now uses a **source-driven library**: the editor saves
 JSON metadata and prepares individual native images automatically, without a
 Publish step. Native menus and folder navigation have been validated in the
 isolated Linux VM and on the physical A33 console. Extended navigation and
-long-session validation are ongoing. This V2 runtime has not yet
-been published as a console release. See [the implementation and validation
-status](docs/V2-runtime-library.md).
+long-session validation are ongoing. The
+[2.0.0-alpha.1 editor prerelease](https://github.com/Zorglub51/Project-Chronos-Engine/releases/tag/v2.0.0-alpha.1)
+includes the V2 USB runtime and requires a compatible Chronos console bootstrap.
+See [the implementation and validation status](docs/V2-runtime-library.md).
 
 ## What's in this repo
 

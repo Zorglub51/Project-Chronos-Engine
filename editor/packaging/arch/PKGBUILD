@@ -1,6 +1,6 @@
 pkgname=pce-game-editor
-pkgver=1.0.0alpha
-pkgrel=6
+pkgver=2.0.0alpha1
+pkgrel=1
 pkgdesc='Project Chronos Engine library editor for PC Engine Mini'
 arch=('x86_64')
 url='https://github.com/Zorglub51/Project-Chronos-Engine'

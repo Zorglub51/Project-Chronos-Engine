@@ -117,4 +117,5 @@ frontend, portable save-runtime and native-harness/digest/slice/layout tests.
 Linux libc routing
 also completed 1,000 open/stat cycles without a file-descriptor increase.
 Physical A33 validation remains necessary before distributing this adapter
-as a console release. This does not claim a long-session hardware soak test.
+as a separate firmware release. The 2.0.0-alpha.1 editor prerelease includes the
+USB runtime; this does not claim a long-session hardware soak test.

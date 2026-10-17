@@ -1,7 +1,9 @@
 # V2: filesystem-driven runtime library
 
-Status: implemented in the development tree, not yet a published console
-release. The original ARM32 M2 engine has displayed source-driven menus and
+Status: included in the 2.0.0-alpha.1 editor prerelease, with the runtime
+installed on the USB key. A compatible Chronos console bootstrap is required;
+this editor release does not provide new P6/P7 firmware images.
+The original ARM32 M2 engine has displayed source-driven menus and
 passed initial navigation tests in the isolated Linux VM and on the physical
 A33 console. Full-limit and long-session checks are still being validated;
 the Mac rewrite does not validate native M2 behavior.

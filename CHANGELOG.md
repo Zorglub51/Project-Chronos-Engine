@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.0.0-alpha.1 (2026-10-17)
 
 - Read the editor's JSON library directly in the native console runtime, with
   asynchronous current-folder snapshots and remembered lineup/folder selections.
@@ -63,6 +63,11 @@
   single-operation locking and transfer progress. Recovery startup currently
   uses the existing recovery utility.
 
+Packages: Windows x64 portable ZIP with installer, universal macOS application
+(Apple Silicon and Intel, macOS 11+), Linux x86_64 AppImage and native Arch Linux
+x86_64 package. Each download includes or is accompanied by source provenance
+and SHA-256 verification.
+
 Validation: source menus with 0, 1, 2, 3, 4 and 10 entries, JP-folder/US-root
 navigation, direct JSON title updates and SGX launch/four state slots pass with
 the original ARM32 engine in the isolated Linux VM. Independent save tests cover
@@ -70,8 +75,9 @@ native HuCard/CD/SGX pairs and a JP-to-US move. Physical A33 testing confirms
 22-entry root navigation, RPG/Shooters folder changes, smoother scrolling and
 the corrected partly visible left cover. No measured A33 frame-time gain or
 long-session memory plateau is claimed. Complete source navigation,
-glyph/extended-transition tests and hardware memory validation remain ongoing;
-these development changes are not yet a console release.
+glyph/extended-transition tests and hardware memory validation remain ongoing.
+This is an editor prerelease with its bundled USB runtime; no new P6/P7
+firmware images are included.
 
 ## 1.0 alpha — editor revision 6 (2026-10-12)
 

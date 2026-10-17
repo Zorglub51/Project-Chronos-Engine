@@ -1,6 +1,6 @@
 {
   "productName": "PCE Game Editor",
-  "version": "1.0.0-alpha",
+  "version": "2.0.0-alpha.1",
   "identifier": "com.pce.game-editor",
   "build": {
     "frontendDist": "../src",
@@ -29,6 +29,9 @@
     "targets": ["app"],
     "resources": {
       "../crates/m2-publish/fonts/OFL.txt": "licenses/NotoSansCJK-OFL.txt"
+    },
+    "macOS": {
+      "minimumSystemVersion": "11.0"
     },
     "category": "DeveloperTool"
   }

@@ -24,6 +24,7 @@
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GLES2/gl2.h>
+#include <GLES2/gl2ext.h>
 #include <gbm.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
@@ -48,7 +49,7 @@ static EGLContext egl_ctx = EGL_NO_CONTEXT;
 /* Display FBO (replaces default framebuffer for surfaceless context) */
 static GLuint display_fbo = 0;
 static GLuint display_color_tex = 0;
-static GLuint display_depth_rb = 0;
+static GLuint display_depth_stencil_rb = 0;
 static int use_bgra_readback = 0;  /* GL_EXT_read_format_bgra */
 #define GL_BGRA_EXT 0x80E1
 
@@ -237,20 +238,30 @@ static int init_gbm_egl(void) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    glGenRenderbuffers(1, &display_depth_rb);
-    glBindRenderbuffer(GL_RENDERBUFFER, display_depth_rb);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT16, RENDER_WIDTH, RENDER_HEIGHT);
+    /* Native motion masks need stencil on the surrogate default framebuffer. */
+    glGenRenderbuffers(1, &display_depth_stencil_rb);
+    glBindRenderbuffer(GL_RENDERBUFFER, display_depth_stencil_rb);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8_OES, RENDER_WIDTH, RENDER_HEIGHT);
     glBindRenderbuffer(GL_RENDERBUFFER, 0);
 
     glGenFramebuffers(1, &display_fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, display_fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, display_color_tex, 0);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, display_depth_rb);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, display_depth_stencil_rb);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_STENCIL_ATTACHMENT, GL_RENDERBUFFER, display_depth_stencil_rb);
 
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-        ERR("Display FBO incomplete\n"); return 0;
+    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_COMPLETE) {
+        ERR("Display FBO incomplete: 0x%x\n", status); return 0;
     }
-    DBG("Display FBO %u created (%dx%d)\n", display_fbo, RENDER_WIDTH, RENDER_HEIGHT);
+    GLint depth_bits = 0, stencil_bits = 0;
+    glGetIntegerv(GL_DEPTH_BITS, &depth_bits);
+    glGetIntegerv(GL_STENCIL_BITS, &stencil_bits);
+    fprintf(stderr, "[gl_proxy] Display FBO %u created (%dx%d, depth=%d, stencil=%d)\n",
+            display_fbo, RENDER_WIDTH, RENDER_HEIGHT, depth_bits, stencil_bits);
+    if (depth_bits < 24 || stencil_bits < 8) {
+        ERR("Display FBO lacks the required depth/stencil storage\n"); return 0;
+    }
 
     return 1;
 }
@@ -1182,7 +1193,7 @@ int main(int argc, char **argv) {
     /* Display FBO cleanup */
     if (display_fbo) glDeleteFramebuffers(1, &display_fbo);
     if (display_color_tex) glDeleteTextures(1, &display_color_tex);
-    if (display_depth_rb) glDeleteRenderbuffers(1, &display_depth_rb);
+    if (display_depth_stencil_rb) glDeleteRenderbuffers(1, &display_depth_stencil_rb);
 
     /* EGL cleanup */
     eglMakeCurrent(egl_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);

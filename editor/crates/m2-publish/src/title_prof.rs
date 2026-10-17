@@ -20,7 +20,12 @@ pub struct GenInputs<'a> {
     pub games: &'a [Game],
 }
 
+#[cfg(test)]
 pub fn generate(inputs: &GenInputs) -> Result<Vec<u8>, Error> {
+    generate_with_save_schema(inputs, false)
+}
+
+pub fn generate_with_save_schema(inputs: &GenInputs, per_game_saves: bool) -> Result<Vec<u8>, Error> {
     let mut tree = m2_psb::read(inputs.template_psb)?;
 
     let mut versions = build_version_map(inputs.games);
@@ -29,7 +34,10 @@ pub fn generate(inputs: &GenInputs) -> Result<Vec<u8>, Error> {
     // Navigation uses the full menu tag to locate a folder, but its emulator
     // profile must have a short key for initialization and context reloads.
     // Replace only long navigation keys, without adding or moving save slots.
-    let mut default_tag = inputs.games.first().map(|g| g.region_tag.clone());
+    let default_index = if per_game_saves {
+        inputs.games.iter().position(|g| g.game_id().is_some()).or_else(|| (!inputs.games.is_empty()).then_some(0))
+    } else { Some(0) };
+    let mut default_tag = default_index.and_then(|index| inputs.games.get(index)).map(|g| g.region_tag.clone());
     for (index, game) in inputs.games.iter().enumerate() {
         if game.data.rom.arch == "folder" && game.region_tag.len() > 14 {
             let alias = format!("FOLDER_{index:03}");
@@ -40,8 +48,22 @@ pub fn generate(inputs: &GenInputs) -> Result<Vec<u8>, Error> {
             let version = game_versions.swap_remove(&game.region_tag).unwrap();
             versions.insert(alias.clone(), profile);
             game_versions.insert(alias.clone(), version);
-            if index == 0 { default_tag = Some(alias); }
+            if Some(index) == default_index { default_tag = Some(alias); }
         }
+    }
+    if per_game_saves && inputs.games.is_empty() {
+        // Internal bootstrap only: no carousel entry, binding or save slot.
+        let tag = "CHRONOS_EMPTY";
+        let rom = GameRom { arch: "folder".into(), country: "japan".into(),
+            preamp: 1.0, rom: "DUMMY.pce".into(), ..Default::default() };
+        let mut profile = build_rom_entry(&rom);
+        if let Value::Object(fields) = &mut profile {
+            fields.insert("chronos_game_id".into(), Value::String(String::new()));
+            fields.insert("chronos_save_path".into(), Value::String(String::new()));
+        }
+        versions.insert(tag.into(), profile);
+        game_versions.insert(tag.into(), Value::Array(vec![Value::Int(0), Value::Int(0), Value::String(String::new())]));
+        default_tag = Some(tag.into());
     }
     if let Some(default) = default_tag {
         let defaults = ["japan", "usa", "europe", "asia"].into_iter()
@@ -50,6 +72,15 @@ pub fn generate(inputs: &GenInputs) -> Result<Vec<u8>, Error> {
     }
     set_path(&mut tree, &["root", "m2epi", "version"], Value::Object(versions))?;
     set_path(&mut tree, &["root", "game_versions"], Value::Object(game_versions))?;
+    set_path(&mut tree, &["root", "m2epi", "chronos_save_schema"], Value::Int(if per_game_saves { 2 } else { 1 }))?;
+    // Only one native EmuSram is needed. The hook changes its owner before
+    // each real game transition and persists the 8448-byte block per game.
+    set_path(&mut tree, &["root", "m2epi", "sram_common"], Value::Bool(per_game_saves))?;
+    if per_game_saves {
+        // Retail disables the general SRAM adapter. V2 uses that adapter for
+        // its common working slot; navigation profiles override this to false.
+        set_path(&mut tree, &["root", "m2epi", "sram_support"], Value::Bool(true))?;
+    }
 
     Ok(m2_psb::write(&tree, 4)?)
 }
@@ -57,7 +88,11 @@ pub fn generate(inputs: &GenInputs) -> Result<Vec<u8>, Error> {
 fn build_version_map(games: &[Game]) -> IndexMap<String, Value> {
     let mut map = IndexMap::new();
     for g in games {
-        let primary = build_rom_entry(&g.data.rom);
+        let mut primary = build_rom_entry(&g.data.rom);
+        if let Value::Object(profile) = &mut primary {
+            profile.insert("chronos_game_id".into(), Value::String(g.game_id().unwrap_or("").into()));
+            profile.insert("chronos_save_path".into(), Value::String(g.save_path().unwrap_or_default()));
+        }
         map.insert(g.region_tag.clone(), primary.clone());
 
         // Alts inherit primary config — same ROM, same arch/country/preamp/extras
@@ -72,6 +107,13 @@ fn build_version_map(games: &[Game]) -> IndexMap<String, Value> {
 
 fn build_rom_entry(rom: &GameRom) -> Value {
     let mut obj = IndexMap::new();
+    // Preserve the full typed profile, including options unknown to this
+    // editor. Null means no per-game override, never an explicit native null.
+    for (key, value) in &rom.extra {
+        if !value.is_null() && key != "systemdata_sram_data_no" && !key.starts_with("chronos_") {
+            obj.insert(key.clone(), crate::parameters::to_psb(value));
+        }
+    }
     // `folder` is an editor marker, not a machine supported by native M2.
     // The stock engine tolerates a missing ROM with tg16, including at boot.
     // Keep the pseudo-ROM/tag and slot: navigation uses csize + regionTag.
@@ -80,6 +122,10 @@ fn build_rom_entry(rom: &GameRom) -> Value {
     obj.insert("country".into(), Value::String(rom.country.clone()));
     obj.insert("preamp".into(), Value::Float(rom.preamp));
     obj.insert("rom".into(), Value::String(format!("roms/{}", basename(&rom.rom))));
+    if rom.arch == "folder" {
+        // A navigation bootstrap must never capture/apply a real game's SRAM.
+        obj.insert("sram_support".into(), Value::Bool(false));
+    }
     if let Some(sc) = &rom.tg16cd_systemcard {
         obj.insert("tg16cd_systemcard".into(), Value::String(sc.clone()));
     }
@@ -149,6 +195,32 @@ fn set_path(tree: &mut Value, path: &[&str], new_value: Value) -> Result<(), Err
 mod tests {
     use super::*;
     use crate::library::GameJson;
+
+    #[test]
+    fn expert_metadata_survives_model_psb_and_alternate_profile_roundtrips() {
+        let original: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/expert-game.json")).unwrap();
+        crate::parameters::validate_game(&original).unwrap();
+        let data: GameJson = serde_json::from_value(original.clone()).unwrap();
+        let saved = serde_json::to_value(&data).unwrap();
+        for block in ["rom", "emulator", "display", "future_metadata"] {
+            assert_eq!(saved[block], original[block]);
+        }
+        let mut g = game("GAME700", "tg16");
+        g.data = data;
+        let output = generated(&[g]).to_json();
+        for tag in ["GAME700", "GAME700E"] {
+            let profile = &output["root"]["m2epi"]["version"][tag];
+            for (key, expected) in original["rom"].as_object().unwrap() {
+                let expected = if key == "rom" { serde_json::json!("roms/fixture.pce") }
+                    else { expected.clone() };
+                let actual = &profile[key];
+                if key == "brightness" || key == "preamp" {
+                    assert!((actual.as_f64().unwrap() - expected.as_f64().unwrap()).abs() < 0.00001);
+                } else { assert_eq!(actual, &expected, "profile field {key}"); }
+            }
+        }
+    }
 
     fn game(tag: &str, arch: &str) -> Game {
         Game {
@@ -221,5 +293,40 @@ mod tests {
         assert!(matches!(member(entry, "arch"), Value::String(s) if s == "tg16cd"));
         assert!(matches!(member(entry, "tg16cd_systemcard"), Value::String(s) if s == "syscard.pce"));
         assert!(matches!(member(entry, "tg16_option"), Value::Int(2)));
+    }
+
+    #[test]
+    fn per_game_save_boot_uses_first_playable_without_moving_native_slots() {
+        let mut playable = game("GAME007", "sgx");
+        playable.data.game_id = Some("0123456789abcdef0123456789abcdef".into());
+        let games = [game("FOLDER_jp_BACK", "folder"), playable];
+        let template = m2_psb::write(&Value::Object(IndexMap::from([("root".into(),
+            Value::Object(IndexMap::from([("m2epi".into(), Value::Object(IndexMap::new()))])))])), 4).unwrap();
+        let output = m2_psb::read(&generate_with_save_schema(&GenInputs {
+            template_psb: &template, games: &games
+        }, true).unwrap()).unwrap().to_json();
+        let root = &output["root"];
+        assert_eq!(root["game_versions_default"]["japan"], "GAME007");
+        assert_eq!(root["game_versions"]["FOLDER_jp_BACK"][0], 0);
+        assert_eq!(root["game_versions"]["GAME007"][0], 1);
+        assert_eq!(root["m2epi"]["sram_common"], true);
+        assert_eq!(root["m2epi"]["sram_support"], true);
+        assert_eq!(root["m2epi"]["version"]["GAME007"]["chronos_game_id"],
+            "0123456789abcdef0123456789abcdef");
+        assert_eq!(root["m2epi"]["version"]["FOLDER_jp_BACK"]["chronos_game_id"], "");
+        assert_eq!(root["m2epi"]["version"]["FOLDER_jp_BACK"]["sram_support"], false);
+    }
+
+    #[test]
+    fn empty_save_catalogue_has_an_unowned_bootstrap_instead_of_stale_defaults() {
+        let template = m2_psb::write(&Value::Object(IndexMap::from([("root".into(),
+            Value::Object(IndexMap::from([("m2epi".into(), Value::Object(IndexMap::new()))])))])), 4).unwrap();
+        let output = m2_psb::read(&generate_with_save_schema(&GenInputs {
+            template_psb: &template, games: &[]
+        }, true).unwrap()).unwrap().to_json();
+        let root = &output["root"];
+        assert_eq!(root["game_versions_default"]["japan"], "CHRONOS_EMPTY");
+        assert_eq!(root["m2epi"]["version"]["CHRONOS_EMPTY"]["chronos_game_id"], "");
+        assert_eq!(root["m2epi"]["version"]["CHRONOS_EMPTY"]["sram_support"], false);
     }
 }

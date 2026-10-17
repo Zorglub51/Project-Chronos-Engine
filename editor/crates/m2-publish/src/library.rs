@@ -47,6 +47,7 @@ pub struct GameDisplay {
     #[serde(default)] pub csize: u32,
     #[serde(default)] pub players: u32,
     #[serde(default)] pub demo_time: u32,
+    #[serde(flatten)] pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -54,6 +55,7 @@ pub struct GameEmulator {
     #[serde(rename = "EmuOfsX", default)] pub emu_ofs_x: i32,
     #[serde(rename = "EmuOfsY", default)] pub emu_ofs_y: i32,
     #[serde(rename = "ScreenMode", default)] pub screen_mode: u32,
+    #[serde(flatten)] pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -67,6 +69,7 @@ pub struct GameRom {
     #[serde(skip_serializing_if = "Option::is_none")] pub tg16pad_type: Option<u32>,
     #[serde(rename = "regionTag", skip_serializing_if = "Option::is_none")]
     pub region_tag: Option<String>,
+    #[serde(flatten)] pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -86,12 +89,17 @@ pub struct RomAlt {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GameJson {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub game_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_region_tag: Option<String>,
     #[serde(default)] pub display: GameDisplay,
     #[serde(default)] pub emulator: GameEmulator,
     pub rom: GameRom,
     #[serde(default)] pub rom_alt: RomAlt,
     #[serde(default)] pub cover: Option<String>,
     #[serde(default)] pub cover_size: Option<CoverSize>,
+    #[serde(flatten)] pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -129,22 +137,36 @@ pub struct Game {
 }
 
 impl Game {
+    /// Persistent source identity; navigation cards deliberately have none.
+    pub fn game_id(&self) -> Option<&str> {
+        self.data.game_id.as_deref().filter(|id| crate::identity::valid_game_id(id))
+    }
+    /// Game directory relative to the library root, portable across host OSes.
+    /// The native hook resolves this beneath /mnt/usb/library, never by index.
+    pub fn save_path(&self) -> Option<String> {
+        self.game_id()?;
+        if self.save_state_type().is_none() { return None; }
+        let root = crate::rom_store::library_root(&self.source_dir)?;
+        let relative = self.source_dir.strip_prefix(root).ok()?;
+        let mut parts = Vec::new();
+        for part in relative.components() {
+            let std::path::Component::Normal(part) = part else { return None; };
+            let part = part.to_str()?;
+            if part.contains('\\') { return None; }
+            parts.push(part);
+        }
+        Some(parts.join("/"))
+    }
     pub fn rom_path(&self) -> PathBuf { crate::rom_store::resolve(&self.source_dir, &self.data.rom.rom) }
     pub fn cover_path(&self) -> PathBuf {
         let f = self.data.cover.clone().unwrap_or_else(|| "cover.png".into());
         self.source_dir.join(f)
     }
-    /// Path to this game's SRAM block in the library. The publisher reads
-    /// this on publish and embeds it into the destination pack's
-    /// concatenated `saves/sram.bin` at the game's positional offset.
-    /// 8448 bytes if present; missing/wrong-size = zero block in the pack.
-    /// Editor writes it during console-sync by splitting a pack's sram.bin
-    /// into per-game blocks using `gamelist.json[N]` for identity.
+    /// Canonical 8448-byte SRAM block. V2 routes directly to this file;
+    /// legacy exports still embed a positional compatibility bank.
     pub fn sram_path(&self) -> PathBuf { self.source_dir.join("sram.bin") }
-    /// Per-game save state directory in the library. Contains slot-agnostic
-    /// `state_0.bin..state_3.bin` and matching `state_N_meta.bin` files.
-    /// Publisher emits them into the destination pack's `saves/` as
-    /// `data_{TTT}_{game_index*4+N+lineup_offset:04}.bin` (+ meta).
+    /// Four permanent slots (0..3, displayed1..4) and matching metadata.
+    /// Only legacy standalone exports create positional compatibility copies.
     pub fn saves_dir(&self) -> PathBuf { self.source_dir.join("saves") }
     /// Save state segment type for this game's arch.
     /// 011 = CD games (EMU_STATE_L), 012 = HuCard / SGX / everything else.
@@ -334,8 +356,13 @@ fn load_game(game_dir: &Path, entry: GameListEntry) -> Result<Game, Error> {
         return Err(Error::Library(format!("missing {}", game_json.display())));
     }
     let txt = std::fs::read_to_string(&game_json)?;
-    let data: GameJson = serde_json::from_str(&txt)?;
-    let region_tag = data.rom.region_tag.clone().unwrap_or_else(|| entry.folder.clone());
+    let mut raw: serde_json::Value = serde_json::from_str(&txt)?;
+    crate::parameters::validate_game(&raw).map_err(Error::Library)?;
+    crate::parameters::normalize_game(&mut raw);
+    let data: GameJson = serde_json::from_value(raw)?;
+    let region_tag = data.native_region_tag.clone()
+        .or_else(|| data.rom.region_tag.clone())
+        .unwrap_or_else(|| entry.folder.clone());
     Ok(Game {
         dir_name: entry.folder,
         region_tag,

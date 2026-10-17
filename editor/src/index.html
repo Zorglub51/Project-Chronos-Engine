@@ -16,6 +16,7 @@
                     <div class="sidebar-navigation"><button class="btn-small" id="btn-home">Home</button><button class="btn-gear" id="btn-settings" title="Settings">&#9881;</button></div>
                 </div>
                 <p id="library-stats">No library loaded</p>
+                <p id="save-status" role="status" aria-live="polite"></p>
             </div>
             <div class="lineup-tabs" id="lineup-tabs" style="display:none">
                 <button class="lineup-tab active" data-lineup="jp">JP</button>
@@ -25,8 +26,9 @@
                 <button id="btn-add" title="Add new game">+ Add Game</button>
                 <button id="btn-add-folder" title="Add sub-folder">+ Folder</button>
                 <button id="btn-sorting" title="Edit sort orders">Sorting</button>
-                <button id="btn-publish" title="Publish the library and update Chronos files on the USB key">Publish…</button>
+                <button id="btn-publish" style="display:none" title="Publish the library and update Chronos files on the USB key">Publish…</button>
             </div>
+            <p id="menu-limit-warning" class="menu-limit-warning" role="status" hidden></p>
             <div class="folder-breadcrumb" id="folder-breadcrumb" style="display:none">
                 <button class="breadcrumb-back" id="breadcrumb-back">&larr; Back</button>
                 <span class="breadcrumb-name" id="breadcrumb-folder-name"></span>
@@ -365,9 +367,10 @@
                             </div>
                         </div>
                         <div class="field-row">
-                            <label class="field-label">Demo Time (ms)</label>
+                            <label class="field-label">Demo Time (frames)</label>
                             <div class="field-value">
-                                <input type="number" id="f-demo-time" data-path="display.demo_time" min="0" step="100">
+                                <input type="number" id="f-demo-time" data-path="display.demo_time" min="0" step="1">
+                                <p class="setting-hint">About 60 frames per second.</p>
                             </div>
                         </div>
                         <div class="field-row">
@@ -394,15 +397,14 @@
                                 <datalist id="rom-datalist"></datalist>
                             </div>
                         </div>
-                        <div class="field-row">
-                            <label class="field-label">Preamp (dB)</label>
-                            <div class="field-value">
-                                <div class="slider-combo">
-                                    <input type="range" id="f-preamp-slider" min="-5" max="5" step="0.01">
-                                    <input type="number" id="f-preamp" data-path="rom.preamp" step="0.01" min="-5" max="5">
-                                </div>
-                            </div>
-                        </div>
+                    </div>
+                </div>
+
+                <div class="section" data-section="expert">
+                    <div class="section-title">Expert</div>
+                    <div class="section-body">
+                        <p class="setting-hint">Advanced settings for this game. Changes are saved automatically and apply the next time the game is loaded. Blank optional fields inherit the shared profile.</p>
+                        <div id="expert-fields"><p class="setting-hint">Loading parameter descriptions…</p></div>
                     </div>
                 </div>
 
@@ -469,12 +471,12 @@
             <label for="new-source-type">Backup format</label>
             <select id="new-source-type"><option value="image">Single dump file (full NAND or P9 image)</option><option value="partitions">Folder of separate partitions</option><option value="folder">Extracted P9 / game folder</option></select>
             <div class="setting-path-row"><input id="new-source" readonly placeholder="Select your backup"><button id="btn-new-source">Choose…</button></div>
-            <label>Destination parent folder</label>
-            <div class="setting-path-row"><input id="new-parent" readonly placeholder="Select where to create the library"><button id="btn-new-parent">Choose…</button></div>
-            <label for="new-name">New folder name</label><input id="new-name" value="Chronos">
+            <label for="new-destination">Destination USB drive or folder</label>
+            <div class="setting-path-row"><input id="new-destination" readonly placeholder="Select the USB drive itself or an empty folder"><button id="btn-new-destination">Choose…</button></div>
+            <p class="setting-hint">Select the USB drive itself to use it on the console, or a dedicated empty folder to prepare it elsewhere.</p>
             <label for="new-contents">Initial contents</label>
             <select id="new-contents"><option value="stock">Include the original games and covers</option><option value="empty">Empty library — add my own games</option></select>
-            <p class="setting-hint">Creates game/ and library/ inside the new folder. Copy those two folders to the USB root when ready. Your backup stays unchanged. A full dump and separate partitions are read directly; no Linux VM is needed.</p>
+            <p class="setting-hint">Creates game/ and library/ directly in the selected destination. Existing libraries are never replaced. Your backup stays unchanged. A full dump and separate partitions are read directly; no Linux VM is needed.</p>
             <p id="new-error" class="import-error" role="alert"></p>
             <div class="modal-actions"><button id="btn-new-cancel">Cancel</button><button class="btn-primary" id="btn-new-create">Create library</button></div>
         </div>
@@ -489,6 +491,7 @@
         </div>
     </div>
     <script src="partitions.js"></script>
+    <script src="expert.js"></script>
     <script type="module" src="app.js"></script>
 </body>
 </html>

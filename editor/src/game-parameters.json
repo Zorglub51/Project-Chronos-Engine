@@ -1,0 +1,841 @@
+{
+  "schema": 1,
+  "scope": "Per-item title_mode_top and per-version title_prof. Root/controller/package options are shared template settings, not per-game overrides.",
+  "parameters": [
+    {
+      "path": "emulator.ScreenMode",
+      "key": "ScreenMode",
+      "label": "Screen framing",
+      "type": "integer",
+      "group": "Screen",
+      "help": "Selects a crop before display scaling. Heights are unchanged. Crop behavior depends on the emulation core; the choices shown match the selected game. Other integers retain the full raster.",
+      "ui": "expert",
+      "optional": false,
+      "default": 0,
+      "min": 0,
+      "max": 2147483647,
+      "choices": [
+        [
+          0,
+          "0 · Standard (272 → 256)"
+        ],
+        [
+          1,
+          "1 · Full raster"
+        ],
+        [
+          2,
+          "2 · 272 → 256, 352 → 320"
+        ],
+        [
+          3,
+          "3 · Same crop as 2"
+        ],
+        [
+          4,
+          "4 · 272 → 256, 352 → 336, 512 → 256"
+        ],
+        [
+          5,
+          "5 · 272 → 256, 512 → 256"
+        ]
+      ],
+      "source": "TG16 0x7612c; TG16CD 0x7e344; SGX 0x87e64; 63 r2 descriptor probes",
+      "choicesByArch": {
+        "tg16": [
+          [
+            0,
+            "0 · Standard (272 → 256)"
+          ],
+          [
+            1,
+            "1 · Full raster"
+          ],
+          [
+            2,
+            "2 · 272 → 256, 352 → 320"
+          ],
+          [
+            3,
+            "3 · Same crop as 2"
+          ],
+          [
+            4,
+            "4 · 272 → 256, 352 → 336, 512 → 256"
+          ],
+          [
+            5,
+            "5 · 272 → 256, 512 → 256"
+          ]
+        ],
+        "tg16cd": [
+          [
+            0,
+            "0 · 272 → 256 at X=8"
+          ],
+          [
+            1,
+            "1 · 272 → 256 at X=16"
+          ],
+          [
+            2,
+            "2 · 272 → 256, 352 → 320 at X=24"
+          ],
+          [
+            3,
+            "3 · 272 → 256, 352 → 336"
+          ],
+          [
+            4,
+            "4 · Same crop as 3"
+          ],
+          [
+            5,
+            "5 · Full raster"
+          ]
+        ],
+        "sgx": [
+          [
+            0,
+            "0 · 272 → 256"
+          ],
+          [
+            1,
+            "1 · Full raster"
+          ],
+          [
+            2,
+            "2 · Full raster"
+          ],
+          [
+            3,
+            "3 · 272 → 256, 352 → 320"
+          ],
+          [
+            4,
+            "4 · Full raster"
+          ],
+          [
+            5,
+            "5 · Full raster"
+          ]
+        ]
+      }
+    },
+    {
+      "path": "emulator.EmuOfsX",
+      "key": "EmuOfsX",
+      "label": "Horizontal offset",
+      "type": "integer",
+      "group": "Screen",
+      "help": "Adds a signed pixel offset to the crop's source position. A positive value moves the sampled window right/down; a negative value moves it left/up. This does not move the on-screen UI. The native renderer only uses these offsets when an explicit crop is active (or GT screen mode is enabled); full-raster modes otherwise ignore them.",
+      "ui": "expert",
+      "optional": false,
+      "default": 0,
+      "source": "TG16 video descriptor 0x761a0–0x761e6"
+    },
+    {
+      "path": "emulator.EmuOfsY",
+      "key": "EmuOfsY",
+      "label": "Vertical offset",
+      "type": "integer",
+      "group": "Screen",
+      "help": "Adds a signed pixel offset to the crop's source position. A positive value moves the sampled window right/down; a negative value moves it left/up. This does not move the on-screen UI. The native renderer only uses these offsets when an explicit crop is active (or GT screen mode is enabled); full-raster modes otherwise ignore them.",
+      "ui": "expert",
+      "optional": false,
+      "default": 0,
+      "source": "TG16 video descriptor 0x761a0–0x761e6"
+    },
+    {
+      "path": "rom.preamp",
+      "key": "preamp",
+      "label": "Audio gain (dB)",
+      "type": "number",
+      "group": "Audio",
+      "help": "Relative audio gain in decibels: 0 keeps the normal level, +6 is approximately twice the signal amplitude, −6 approximately half. Large positive values can clip. This adds to the engine's driver gain.",
+      "ui": "expert",
+      "optional": false,
+      "default": 0,
+      "source": "emulator.nut init_emulator; native mixer 0x7480c / 0x748a8"
+    },
+    {
+      "path": "rom.overdrive",
+      "key": "overdrive",
+      "label": "Input latency reduction",
+      "type": "integer",
+      "group": "Emulation",
+      "help": "0 or less disables run-ahead. N > 0 displays a frame simulated N frames ahead using current inputs, then restores the normal state. It can make controls feel quicker, costs extra CPU, and does not permanently speed up the game.",
+      "ui": "expert",
+      "optional": true,
+      "default": 0,
+      "source": "emulator.nut init_emulator; native task 0x1ed238"
+    },
+    {
+      "path": "rom.brightness",
+      "key": "brightness",
+      "label": "Brightness multiplier",
+      "type": "number",
+      "group": "Screen",
+      "help": "Multiplies all displayed RGB channels. 1 is unchanged; 0 is black; values above 1 brighten and may saturate. The emulated VDC palette is unchanged.",
+      "ui": "expert",
+      "optional": true,
+      "default": 1,
+      "min": 0,
+      "source": "emulator.nut init_emulator; EmuView 0x2fe78"
+    },
+    {
+      "path": "rom.country",
+      "key": "country",
+      "label": "Hardware region",
+      "type": "string",
+      "group": "Emulation",
+      "help": "The original core recognizes jp and us. jp sets the controller region bit; us clears it. This can affect games that inspect the region, but does not select a PAL refresh rate. Other strings use the Japanese fallback.",
+      "ui": "expert",
+      "optional": false,
+      "choices": [
+        [
+          "jp",
+          "Japan"
+        ],
+        [
+          "us",
+          "USA"
+        ]
+      ],
+      "source": "TG16 constructor 0x76d30, controller read 0x76528",
+      "values": "jp or us are recognized. Other strings use the Japanese hardware fallback.",
+      "default": "jp"
+    },
+    {
+      "path": "rom.tg16pad_type",
+      "key": "tg16pad_type",
+      "label": "Controller protocol",
+      "type": "integer",
+      "group": "Input",
+      "help": "Bit mask: 1 enables the five-port multitap; 2 enables the six-button protocol; 4 keeps auxiliary input per port instead of sharing it. Value 5 still uses TWO buttons.",
+      "ui": "expert",
+      "optional": true,
+      "default": 1,
+      "min": 0,
+      "max": 7,
+      "choices": [
+        [
+          0,
+          "0 · Two buttons"
+        ],
+        [
+          1,
+          "1 · Two buttons + multitap"
+        ],
+        [
+          2,
+          "2 · Six buttons"
+        ],
+        [
+          3,
+          "3 · Six buttons + multitap"
+        ],
+        [
+          4,
+          "4 · Two buttons + per-port auxiliary"
+        ],
+        [
+          5,
+          "5 · Two buttons + multitap + per-port auxiliary"
+        ],
+        [
+          6,
+          "6 · Six buttons + per-port auxiliary"
+        ],
+        [
+          7,
+          "7 · Six buttons + multitap + per-port auxiliary"
+        ]
+      ],
+      "source": "emulator.nut _init_emulator_get_arch_sub_info; 0x77b58 / 0x77b9c"
+    },
+    {
+      "path": "rom.tg16_option",
+      "key": "tg16_option",
+      "label": "Game timing options",
+      "type": "integer",
+      "group": "Emulation",
+      "help": "Bit 0 (value 1) moves VBlank IRQ and sprite-table transfer to the start of the next frame (TG16/TG16CD). Bit 2 (value 4) doubles CPU work on scanlines 0–29 and 249–262, TG16 HuCard only. Values 2 and 8 have no identified effect. 5 combines 1 and 4. SGX ignores these options.",
+      "ui": "expert",
+      "optional": true,
+      "default": 0,
+      "min": 0,
+      "max": 15,
+      "source": "0x349a8; VDC 0x7af60; TG16 frame 0x762c8"
+    },
+    {
+      "path": "rom.tg16_hblank",
+      "key": "tg16_hblank",
+      "label": "Horizontal timing",
+      "type": "integer",
+      "group": "Emulation",
+      "help": "Adjusts horizontal sequencing, not pixel width. Values 0–9 select the native default of 87; 10–255 use that value. Used by TG16/TG16CD; ignored by SGX.",
+      "ui": "expert",
+      "optional": true,
+      "default": 0,
+      "min": 0,
+      "max": 255,
+      "source": "VDC constructor 0x7a050; horizontal sequencer 0x7b5bc"
+    },
+    {
+      "path": "rom.use_analog",
+      "key": "use_analog",
+      "label": "Keep analog input separate",
+      "type": "boolean",
+      "group": "Input",
+      "help": "True disables the normal conversion/merging of the left stick into digital directions. It does not add analog controls to a PC Engine game.",
+      "ui": "expert",
+      "optional": true,
+      "default": false,
+      "source": "emulator.nut _init_emulator_get_arch_sub_info; native 0x240a2"
+    },
+    {
+      "path": "rom.direction",
+      "key": "direction",
+      "label": "Stick directions",
+      "type": "integer",
+      "group": "Input",
+      "help": "4 converts the stick into four cardinal sectors; every other value uses eight-direction handling, allowing diagonals. This affects stick conversion, not the game's controller button count.",
+      "ui": "expert",
+      "optional": true,
+      "default": 8,
+      "choices": [
+        [
+          4,
+          "Four directions"
+        ],
+        [
+          8,
+          "Eight directions"
+        ]
+      ],
+      "allowNumericString": true,
+      "source": "emulator.nut _init_emulator_get_arch_sub_info; native 0x240b8 / 0x158b8"
+    },
+    {
+      "path": "rom.player_num",
+      "key": "player_num",
+      "label": "Runtime player count",
+      "type": "integer",
+      "group": "Input",
+      "help": "Overrides the profile's runtime player count. It is independent of the player count printed on the menu card.",
+      "ui": "expert",
+      "optional": true,
+      "min": 0,
+      "max": 10,
+      "source": "utils.nut util_get_player_real_num / util_get_player_input_num"
+    },
+    {
+      "path": "rom.player_input_num",
+      "key": "player_input_num",
+      "label": "Input slot count",
+      "type": "integer",
+      "group": "Input",
+      "help": "Overrides the number of input slots initialized by the wrapper. Without an override it uses the profile input count, then the runtime player count. The engine has ten logical input slots; these are not ten physical ports.",
+      "ui": "expert",
+      "optional": true,
+      "min": 0,
+      "max": 10,
+      "source": "utils.nut util_get_player_real_num / util_get_player_input_num"
+    },
+    {
+      "path": "rom.rapid_speed_list",
+      "key": "rapid_speed_list",
+      "label": "Rapid-fire speeds",
+      "type": "array",
+      "group": "Input",
+      "help": "List of offered rapid-fire frequencies. The retail list is [10, 12, 15, 20, 30]. Removing this override restores the controller template's list.",
+      "ui": "expert",
+      "optional": true,
+      "shape": "positiveNumbers",
+      "source": "utils.nut util_get_controller_rapid_speed_list; controller rapid menu"
+    },
+    {
+      "path": "rom.view_split",
+      "key": "view_split",
+      "label": "Render subdivisions",
+      "type": "array",
+      "group": "Screen",
+      "help": "Two positive integers [X,Y] subdivide the display mesh. This does not split the screen between players. The retail Y setter has a comparison bug, so some transitions can skip rebuilding the mesh.",
+      "ui": "expert",
+      "optional": true,
+      "default": [
+        1,
+        1
+      ],
+      "shape": "split",
+      "source": "EmuView 0x311c4 / 0x311d8 / 0x30e24"
+    },
+    {
+      "path": "rom.sram_support",
+      "key": "sram_support",
+      "label": "In-game save memory",
+      "type": "boolean",
+      "group": "Save memory",
+      "help": "Enables the script SRAM adapter for this game. Chronos V2 enables it globally; false disables the adapter for this game. It does not create backup RAM in emulated hardware or enable save states.",
+      "ui": "expert",
+      "optional": true,
+      "default": true,
+      "source": "utils.nut util_is_sram_support; chronos_library.nut build_profile"
+    },
+    {
+      "path": "rom.extra_info",
+      "key": "extra_info",
+      "label": "Extra machine information",
+      "type": "integer",
+      "group": "Compatibility",
+      "help": "Forwarded to the backend factory, but the TG16, TG16CD and SGX factories do not consume it.",
+      "ui": "expert",
+      "optional": true,
+      "status": "inactive",
+      "source": "emulator.nut init helpers; TG16/TG16CD/SGX native adapters"
+    },
+    {
+      "path": "rom.attr",
+      "key": "attr",
+      "label": "Native integer attributes",
+      "type": "object",
+      "group": "Compatibility",
+      "help": "Each key/value is sent to setAttribute. The PC Engine native callbacks return without applying it. A per-game table replaces the global table.",
+      "ui": "expert",
+      "optional": true,
+      "status": "inactive",
+      "shape": "integerMap",
+      "source": "emulator.nut init helpers; TG16/TG16CD/SGX native adapters"
+    },
+    {
+      "path": "rom.string",
+      "key": "string",
+      "label": "Native string attributes",
+      "type": "object",
+      "group": "Compatibility",
+      "help": "Per-name overrides are merged with global strings and sent to setString. The PC Engine backends ignore that command.",
+      "ui": "expert",
+      "optional": true,
+      "status": "inactive",
+      "shape": "stringMap",
+      "source": "emulator.nut init helpers; TG16/TG16CD/SGX native adapters"
+    },
+    {
+      "path": "rom.stringGlobal",
+      "key": "stringGlobal",
+      "label": "Global string attributes",
+      "type": "object",
+      "group": "Compatibility",
+      "help": "Read by the script, but its setter call is commented out; no runtime effect.",
+      "ui": "expert",
+      "optional": true,
+      "status": "inactive",
+      "shape": "stringMap",
+      "source": "emulator.nut init helpers; TG16/TG16CD/SGX native adapters"
+    },
+    {
+      "path": "rom.disable_md_6B",
+      "key": "disable_md_6B",
+      "label": "Disable Mega Drive six-button mode",
+      "type": "boolean",
+      "group": "Compatibility",
+      "help": "A Mega Drive flag. It does not change the PC Engine controller protocol.",
+      "ui": "expert",
+      "optional": true,
+      "status": "inactive",
+      "source": "emulator.nut init helpers; TG16/TG16CD/SGX native adapters"
+    },
+    {
+      "path": "rom.md_multitap",
+      "key": "md_multitap",
+      "label": "Mega Drive multitap",
+      "type": "integer",
+      "group": "Compatibility",
+      "help": "Its reader is commented out in this build; no runtime effect.",
+      "ui": "expert",
+      "optional": true,
+      "status": "inactive",
+      "source": "emulator.nut init helpers; TG16/TG16CD/SGX native adapters"
+    },
+    {
+      "path": "rom.use_subthread",
+      "key": "use_subthread",
+      "label": "Emulator subthread",
+      "type": "boolean",
+      "group": "Compatibility",
+      "help": "Its reader is commented out in this build; no runtime effect.",
+      "ui": "expert",
+      "optional": true,
+      "status": "inactive",
+      "source": "emulator.nut init helpers; TG16/TG16CD/SGX native adapters"
+    },
+    {
+      "path": "display.action",
+      "key": "action",
+      "label": "Menu action",
+      "type": "string",
+      "group": "Menu metadata",
+      "help": "Preserved in title_mode_top. No consumer of this per-item field was found in the shipped selection/demo scripts; changing it has no identified visible effect.",
+      "ui": "expert",
+      "optional": true,
+      "status": "inactive",
+      "default": "Boot",
+      "source": "Stock title_mode_top items; menu and demo read audit"
+    },
+    {
+      "path": "display.copy",
+      "key": "copy",
+      "label": "Copyright text",
+      "type": "string",
+      "group": "Menu metadata",
+      "help": "Preserved in title_mode_top. No consumer of this per-item field was found in the shipped selection/demo scripts; changing it has no identified visible effect.",
+      "ui": "expert",
+      "optional": true,
+      "status": "inactive",
+      "default": "",
+      "source": "Stock title_mode_top items; menu and demo read audit"
+    },
+    {
+      "path": "display.desc",
+      "key": "desc",
+      "label": "Description",
+      "type": "string",
+      "group": "Menu metadata",
+      "help": "Preserved in title_mode_top. No consumer of this per-item field was found in the shipped selection/demo scripts; changing it has no identified visible effect.",
+      "ui": "expert",
+      "optional": true,
+      "status": "inactive",
+      "default": "",
+      "source": "Stock title_mode_top items; menu and demo read audit"
+    },
+    {
+      "path": "rom_alt.regionTagE",
+      "key": "regionTagE",
+      "label": "SELECT variant",
+      "type": "string",
+      "group": "Variants",
+      "help": "NO or empty disables the shortcut. Otherwise use an ASCII native tag of at most 14 characters. The menu selects it with SELECT (E) or the hidden variant sequence (S1/S2). Chronos currently gives aliases the same ROM/profile as the primary game.",
+      "ui": "expert",
+      "optional": true,
+      "default": "NO",
+      "shape": "tag",
+      "source": "mode_title_select.nut _resolve_selected_regionTag; title_prof variant map"
+    },
+    {
+      "path": "rom_alt.regionTagS1",
+      "key": "regionTagS1",
+      "label": "Hidden variant 1",
+      "type": "string",
+      "group": "Variants",
+      "help": "NO or empty disables the shortcut. Otherwise use an ASCII native tag of at most 14 characters. The menu selects it with SELECT (E) or the hidden variant sequence (S1/S2). Chronos currently gives aliases the same ROM/profile as the primary game.",
+      "ui": "expert",
+      "optional": true,
+      "default": "NO",
+      "shape": "tag",
+      "source": "mode_title_select.nut _resolve_selected_regionTag; title_prof variant map"
+    },
+    {
+      "path": "rom_alt.regionTagS2",
+      "key": "regionTagS2",
+      "label": "Hidden variant 2",
+      "type": "string",
+      "group": "Variants",
+      "help": "NO or empty disables the shortcut. Otherwise use an ASCII native tag of at most 14 characters. The menu selects it with SELECT (E) or the hidden variant sequence (S1/S2). Chronos currently gives aliases the same ROM/profile as the primary game.",
+      "ui": "expert",
+      "optional": true,
+      "default": "NO",
+      "shape": "tag",
+      "source": "mode_title_select.nut _resolve_selected_regionTag; title_prof variant map"
+    },
+    {
+      "path": "display.name",
+      "key": "name",
+      "label": "Japanese name",
+      "type": "string",
+      "group": "Ordinary details",
+      "help": "Menu bookkeeping/name and Japanese display fallback; the normal editor keeps tname in sync.",
+      "ui": "existing",
+      "optional": true,
+      "source": "Stock menu/emulator readers; editor platform mapping",
+      "values": "Text; the ordinary editor also updates the Japanese display name."
+    },
+    {
+      "path": "display.tname",
+      "key": "tname",
+      "label": "Japanese display name",
+      "type": "string",
+      "group": "Ordinary details",
+      "help": "Text actually drawn in the Japanese menu view.",
+      "ui": "existing",
+      "optional": true,
+      "source": "Stock menu/emulator readers; editor platform mapping",
+      "values": "Text."
+    },
+    {
+      "path": "display.name_eng",
+      "key": "tname (English view)",
+      "label": "English name",
+      "type": "string",
+      "group": "Ordinary details",
+      "help": "tname in the translated menu half; the two views share one game/profile.",
+      "ui": "existing",
+      "optional": true,
+      "source": "Stock menu/emulator readers; editor platform mapping",
+      "values": "Text."
+    },
+    {
+      "path": "display.players",
+      "key": "players",
+      "label": "Menu player count",
+      "type": "integer",
+      "group": "Ordinary details",
+      "help": "Player count displayed on the card and used by the player-count sort; not the runtime input-slot count.",
+      "ui": "existing",
+      "optional": true,
+      "source": "Stock menu/emulator readers; editor platform mapping",
+      "values": "Menu player count 1–5 in the editor; native metadata stores a nonnegative integer."
+    },
+    {
+      "path": "display.titlebar",
+      "key": "titlebar",
+      "label": "Titlebar",
+      "type": "integer",
+      "group": "Ordinary details",
+      "help": "0 hides the titlebar; 1–12 select a shipped titlebar style.",
+      "ui": "existing",
+      "optional": true,
+      "source": "Stock menu/emulator readers; editor platform mapping",
+      "values": "0 hides the titlebar; 1–12 select the shipped styles."
+    },
+    {
+      "path": "display.ccolor",
+      "key": "ccolor",
+      "label": "Packaging",
+      "type": "integer",
+      "group": "Ordinary details",
+      "help": "0/1 select ordinary case colors; 2 selects double-CD packaging; 3 selects the SGX wide sleeve. This changes artwork geometry, not the emulation core.",
+      "ui": "existing",
+      "optional": true,
+      "source": "Stock menu/emulator readers; editor platform mapping",
+      "values": "0 black case, 1 white case, 2 double-CD case, 3 SGX wide sleeve."
+    },
+    {
+      "path": "display.csize",
+      "key": "csize",
+      "label": "Platform / launch packaging",
+      "type": "integer",
+      "group": "Ordinary details",
+      "help": "0 HuCard, 1 SGX, 2 CD, 3 Super CD, 4 Arcade CD; Chronos reserves 10/11 for folder/BACK navigation. The ordinary platform picker also sets arch and System Card.",
+      "ui": "existing",
+      "optional": true,
+      "source": "Stock menu/emulator readers; editor platform mapping",
+      "values": "0 HuCard, 1 SuperGrafx, 2 CD-ROM2, 3 Super CD-ROM2, 4 Arcade CD-ROM2. 10 and 11 are Chronos folder and BACK markers."
+    },
+    {
+      "path": "display.demo_time",
+      "key": "demo_time",
+      "label": "Attract-mode duration",
+      "type": "integer",
+      "group": "Ordinary details",
+      "help": "Number of menu/emulation ticks (approximately 60 per second), not milliseconds. The demo exits when its incremented counter exceeds this number.",
+      "ui": "existing",
+      "optional": true,
+      "source": "Stock menu/emulator readers; editor platform mapping",
+      "values": "Nonnegative whole number of frames (roughly 60 per second); 0 ends the demo at its first counter check."
+    },
+    {
+      "path": "rom.arch",
+      "key": "arch",
+      "label": "Emulation core",
+      "type": "string",
+      "group": "Ordinary details",
+      "help": "tg16, tg16cd or sgx; derived from the ordinary platform picker. The editor marker folder is exported as a non-playable tg16 bootstrap.",
+      "ui": "existing",
+      "optional": true,
+      "source": "Stock menu/emulator readers; editor platform mapping",
+      "values": "tg16, sgx or tg16cd; folder is a private editor navigation marker."
+    },
+    {
+      "path": "rom.tg16cd_systemcard",
+      "key": "tg16cd_systemcard",
+      "label": "System Card",
+      "type": "string",
+      "group": "Ordinary details",
+      "help": "super selects Super CD RAM; arcade adds 2 MiB Arcade Card RAM. Any other/absent value selects the base card. Derived from the ordinary platform picker.",
+      "ui": "existing",
+      "optional": true,
+      "source": "Stock menu/emulator readers; editor platform mapping",
+      "values": "super, arcade, or another/absent value for the base card."
+    },
+    {
+      "path": "rom.rom",
+      "key": "rom",
+      "label": "ROM file",
+      "type": "string",
+      "group": "Ordinary details",
+      "help": "Chosen shared ROM filename; the hook validates the file, rewrites its logical path and omits the encryption suffix .m.",
+      "ui": "existing",
+      "optional": true,
+      "source": "Stock menu/emulator readers; editor platform mapping",
+      "values": "A filename selected from the shared ROM store: .pce, .sgx, their encrypted .m forms, or .pcd."
+    },
+    {
+      "path": "",
+      "key": "image",
+      "label": "image",
+      "type": "managed",
+      "group": "Managed fields",
+      "help": "Allocated current-folder artwork slot (0–49). Derived from menu order and cover assets.",
+      "ui": "managed",
+      "optional": true,
+      "source": "Chronos identity, catalogue builder and save routing",
+      "values": "Generated menu image slot 0–49."
+    },
+    {
+      "path": "",
+      "key": "dev_name",
+      "label": "dev_name",
+      "type": "managed",
+      "group": "Managed fields",
+      "help": "Package identity that chooses the title session/resources. Derived from the original template; not a per-game emulation region.",
+      "ui": "managed",
+      "optional": true,
+      "source": "Chronos identity, catalogue builder and save routing",
+      "values": "Original package name from the template (PceMini for the stock PC Engine Mini package)."
+    },
+    {
+      "path": "",
+      "key": "regionTag",
+      "label": "regionTag",
+      "type": "managed",
+      "group": "Managed fields",
+      "help": "Primary native profile key, at most 14 ASCII characters. Chronos keeps it stable for native initialization and save routing.",
+      "ui": "managed",
+      "optional": true,
+      "source": "Chronos identity, catalogue builder and save routing",
+      "values": "Generated stable ASCII tag, at most 14 characters."
+    },
+    {
+      "path": "",
+      "key": "game_id",
+      "label": "game_id",
+      "type": "managed",
+      "group": "Managed fields",
+      "help": "Permanent Chronos save identity, not a menu index.",
+      "ui": "managed",
+      "optional": true,
+      "source": "Chronos identity, catalogue builder and save routing",
+      "values": "Generated permanent 32-character hexadecimal identity."
+    },
+    {
+      "path": "",
+      "key": "save_path",
+      "label": "save_path",
+      "type": "managed",
+      "group": "Managed fields",
+      "help": "Validated game directory used by the hook to route saves.",
+      "ui": "managed",
+      "optional": true,
+      "source": "Chronos identity, catalogue builder and save routing",
+      "values": "Validated relative game directory beneath the library."
+    },
+    {
+      "path": "",
+      "key": "save_type",
+      "label": "save_type",
+      "type": "managed",
+      "group": "Managed fields",
+      "help": "Native save-state type, derived from the core: 11 for CD, 12 for HuCard/SGX, 0 for navigation.",
+      "ui": "managed",
+      "optional": true,
+      "source": "Chronos identity, catalogue builder and save routing",
+      "values": "11 CD, 12 HuCard/SGX, 0 navigation."
+    },
+    {
+      "path": "",
+      "key": "systemdata_sram_data_no",
+      "label": "systemdata_sram_data_no",
+      "type": "managed",
+      "group": "Managed fields",
+      "help": "Retail per-version SRAM slot override. Chronos V2 uses its managed common working slot and per-game hook routing; this index is not editable.",
+      "ui": "managed",
+      "optional": true,
+      "source": "Chronos identity, catalogue builder and save routing",
+      "values": "Retail index; managed common SRAM slot in Chronos V2."
+    },
+    {
+      "path": "",
+      "key": "sor_date",
+      "label": "sor_date",
+      "type": "managed",
+      "group": "Managed fields",
+      "help": "Dense sort rank generated from the editor order, genre, name or player count. BACK remains first; ranks are rebuilt for each active folder.",
+      "ui": "managed",
+      "optional": true,
+      "source": "Chronos identity, catalogue builder and save routing",
+      "values": "Generated rank 0 to the active entry count minus one; maximum 49."
+    },
+    {
+      "path": "",
+      "key": "sor_demo",
+      "label": "sor_demo",
+      "type": "managed",
+      "group": "Managed fields",
+      "help": "Dense sort rank generated from the editor order, genre, name or player count. BACK remains first; ranks are rebuilt for each active folder.",
+      "ui": "managed",
+      "optional": true,
+      "source": "Chronos identity, catalogue builder and save routing",
+      "values": "Generated rank 0 to the active entry count minus one; maximum 49."
+    },
+    {
+      "path": "",
+      "key": "sor_genr",
+      "label": "sor_genr",
+      "type": "managed",
+      "group": "Managed fields",
+      "help": "Dense sort rank generated from the editor order, genre, name or player count. BACK remains first; ranks are rebuilt for each active folder.",
+      "ui": "managed",
+      "optional": true,
+      "source": "Chronos identity, catalogue builder and save routing",
+      "values": "Generated rank 0 to the active entry count minus one; maximum 49."
+    },
+    {
+      "path": "",
+      "key": "sor_name",
+      "label": "sor_name",
+      "type": "managed",
+      "group": "Managed fields",
+      "help": "Dense sort rank generated from the editor order, genre, name or player count. BACK remains first; ranks are rebuilt for each active folder.",
+      "ui": "managed",
+      "optional": true,
+      "source": "Chronos identity, catalogue builder and save routing",
+      "values": "Generated rank 0 to the active entry count minus one; maximum 49."
+    },
+    {
+      "path": "",
+      "key": "sor_pnum",
+      "label": "sor_pnum",
+      "type": "managed",
+      "group": "Managed fields",
+      "help": "Dense sort rank generated from the editor order, genre, name or player count. BACK remains first; ranks are rebuilt for each active folder.",
+      "ui": "managed",
+      "optional": true,
+      "source": "Chronos identity, catalogue builder and save routing",
+      "values": "Generated rank 0 to the active entry count minus one; maximum 49."
+    },
+    {
+      "path": "genre",
+      "key": "sor_genr (genre)",
+      "label": "Genre",
+      "type": "integer",
+      "group": "Ordinary details",
+      "ui": "existing",
+      "optional": false,
+      "default": 0,
+      "help": "Selects an editor genre and rebuilds the native genre sort order. It does not change emulation. Genre names are configured in Settings.",
+      "values": "0 means unset; 1 to the number of configured genres selects a genre.",
+      "source": "Editor genre list and catalogue sort permutations"
+    }
+  ]
+}

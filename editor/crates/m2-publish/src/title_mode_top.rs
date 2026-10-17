@@ -26,7 +26,12 @@ pub struct GenInputs<'a> {
     pub games: &'a [Game],
 }
 
+#[cfg(test)]
 pub fn generate(inputs: &GenInputs) -> Result<Vec<u8>, Error> {
+    generate_with_save_schema(inputs, false)
+}
+
+pub fn generate_with_save_schema(inputs: &GenInputs, per_game_saves: bool) -> Result<Vec<u8>, Error> {
     let mut tree = m2_psb::read(inputs.template_psb)?;
 
     // Locate the items array on the root of the template
@@ -59,6 +64,13 @@ pub fn generate(inputs: &GenInputs) -> Result<Vec<u8>, Error> {
     let n = inputs.games.len();
     if n > 50 {
         return Err(Error::Library(format!("folder has {} games, max 50 per lineup", n)));
+    }
+    if per_game_saves {
+        for game in inputs.games.iter().filter(|game| game.save_state_type().is_some()) {
+            if game.game_id().is_none() || game.save_path().is_none() {
+                return Err(Error::Library(format!("Missing persistent save identity/path for {}", game.source_dir.display())));
+            }
+        }
     }
 
     // Build the four 50-item slot ranges
@@ -107,6 +119,7 @@ pub fn generate(inputs: &GenInputs) -> Result<Vec<u8>, Error> {
         o.insert("items".into(), Value::Array(new_items));
         o.insert("titleNum".into(), Value::Int(jp_count as i64));
         o.insert("titleNumTG".into(), Value::Int(us_count as i64));
+        o.insert("chronos_save_schema".into(), Value::Int(if per_game_saves { 2 } else { 1 }));
     }
 
     Ok(m2_psb::write(&tree, 4)?)
@@ -120,6 +133,11 @@ fn make_real_item(template: &Value, game: &Game, slot_index: usize, english: boo
     };
 
     let display = &game.data.display;
+    for key in crate::parameters::TOP_EXTRAS {
+        if let Some(value) = display.extra.get(*key) {
+            obj.insert((*key).into(), crate::parameters::to_psb(value));
+        }
+    }
     let name = if display.name.is_empty() { display.tname.clone() } else { display.name.clone() };
     let tname = if english {
         if !display.name_eng.is_empty() { display.name_eng.clone() }
@@ -142,6 +160,11 @@ fn make_real_item(template: &Value, game: &Game, slot_index: usize, english: boo
     set(&mut obj, "regionTagE", Value::String(region_tag_e));
     set(&mut obj, "regionTagS1", Value::String(region_tag_s1));
     set(&mut obj, "regionTagS2", Value::String(region_tag_s2));
+    // The same identity/path appears in both language views. Neither image
+    // slots nor translated display names participate in persistent routing.
+    set(&mut obj, "game_id", Value::String(game.game_id().unwrap_or("").into()));
+    set(&mut obj, "save_path", Value::String(game.save_path().unwrap_or_default()));
+    set(&mut obj, "save_type", Value::Int(game.save_state_type().unwrap_or(0) as i64));
 
     // Display
     set(&mut obj, "image", Value::Int(slot_index as i64));
@@ -175,6 +198,9 @@ fn make_dummy(template: &Value, abs_slot: usize) -> Value {
         _ => IndexMap::new(),
     };
     set(&mut obj, "image", Value::Int(abs_slot as i64));
+    set(&mut obj, "game_id", Value::String(String::new()));
+    set(&mut obj, "save_path", Value::String(String::new()));
+    set(&mut obj, "save_type", Value::Int(0));
     Value::Object(obj)
 }
 
@@ -186,6 +212,71 @@ fn set(obj: &mut IndexMap<String, Value>, key: &str, value: Value) {
 mod tests {
     use super::*;
     use crate::library::{GameDisplay, GameJson};
+
+    #[test]
+    fn expert_framing_and_menu_metadata_reach_both_language_views() {
+        let dummy = Value::Object(IndexMap::from([("regionTag".into(), Value::String("DUMMY".into()))]));
+        let template = m2_psb::write(&Value::Object(IndexMap::from([
+            ("items".into(), Value::Array(vec![dummy; 200])),
+        ])), 4).unwrap();
+        let data: GameJson = serde_json::from_str(include_str!("../../../tests/fixtures/expert-game.json")).unwrap();
+        let game = Game { dir_name: "GAME700".into(), region_tag: "GAME700".into(), data,
+            sort: Default::default(), source_dir: Default::default() };
+        for (lineup, slots) in [(LineupKind::Jp, [0,100]), (LineupKind::Us, [50,150])] {
+            let packed = generate(&GenInputs { template_psb: &template, lineup, games: &[game.clone()] }).unwrap();
+            let json = m2_psb::read(&packed).unwrap().to_json();
+            for slot in slots {
+                let item = &json["items"][slot];
+                assert_eq!(item["ScreenMode"], 4);
+                assert_eq!(item["EmuOfsX"], -8);
+                assert_eq!(item["EmuOfsY"], 2);
+                assert_eq!(item["copy"], "Test copyright");
+                assert_eq!(item["desc"], "Fixture description");
+                assert_eq!(item["regionTagE"], "GAME700E");
+                assert_eq!(item["image"], 0); // Still allocated by Chronos.
+            }
+        }
+    }
+
+    #[test]
+    fn translated_views_share_save_owner_and_navigation_never_owns_slots() {
+        let directory = std::env::temp_dir().join(format!("chronos-save-view-{}", uuid::Uuid::new_v4().simple()));
+        let game_dir = directory.join("jp/FOLDER_TEST/Game with spaces");
+        std::fs::create_dir_all(&game_dir).unwrap();
+        std::fs::write(directory.join("jp/gamelist.json"), "[]").unwrap();
+        let dummy = Value::Object(IndexMap::from([("regionTag".into(), Value::String("DUMMY".into()))]));
+        let template = m2_psb::write(&Value::Object(IndexMap::from([
+            ("items".into(), Value::Array(vec![dummy; 200])),
+        ])), 4).unwrap();
+        let game = Game {
+            dir_name: "Game with spaces".into(), region_tag: "GAME007".into(),
+            data: GameJson { game_id: Some("0123456789abcdef0123456789abcdef".into()),
+                rom: crate::library::GameRom { arch: "sgx".into(), ..Default::default() }, ..Default::default() },
+            sort: Default::default(), source_dir: game_dir,
+        };
+        let back = Game { dir_name: "BACK".into(), region_tag: "FOLDER_jp_BACK".into(),
+            data: GameJson { rom: crate::library::GameRom { arch: "folder".into(), ..Default::default() },
+                display: GameDisplay { csize: 11, ..Default::default() }, ..Default::default() },
+            sort: Default::default(), source_dir: directory.clone() };
+        for (lineup, views, navigation) in [(LineupKind::Jp, [1,101], [0,100]),
+                                          (LineupKind::Us, [51,151], [50,150])] {
+            let output = generate_with_save_schema(&GenInputs {
+                template_psb: &template, lineup, games: &[back.clone(), game.clone()]
+            }, true).unwrap();
+            let json = m2_psb::read(&output).unwrap().to_json();
+            assert_eq!(json["chronos_save_schema"], 2);
+            for slot in views {
+                assert_eq!(json["items"][slot]["game_id"], "0123456789abcdef0123456789abcdef");
+                assert_eq!(json["items"][slot]["save_path"], "jp/FOLDER_TEST/Game with spaces");
+                assert_eq!(json["items"][slot]["save_type"], 12);
+            }
+            for slot in navigation {
+                assert_eq!(json["items"][slot]["game_id"], "");
+                assert_eq!(json["items"][slot]["save_type"], 0);
+            }
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn no_titlebar_survives_psb_export_in_both_languages_and_lineups() {

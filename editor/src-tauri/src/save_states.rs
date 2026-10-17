@@ -17,7 +17,8 @@ pub struct SaveStateInfo {
 
 #[derive(Debug, Serialize)]
 pub struct GameSaves {
-    pub states: Vec<SaveStateInfo>,
+    /// Fixed native slots 0..3, displayed as 1..4; empty slots are retained.
+    pub states: [SaveStateInfo; 4],
     /// Presence of the imported SRAM file, not proof of in-game progression.
     pub sram_present: bool,
 }
@@ -31,8 +32,10 @@ fn is_file(path: &Path) -> Result<bool, String> {
 }
 
 pub fn read_game_saves(game: &Path) -> Result<GameSaves, String> {
-    let mut states = Vec::with_capacity(4);
-    for slot in 0..4 {
+    let mut states = std::array::from_fn(|slot| SaveStateInfo {
+        slot: slot as u32, exists: false, thumbnail: None, preview_error: None,
+    });
+    for (slot, state) in states.iter_mut().enumerate() {
         let native = game.join(format!("saves/state_{slot}.bin"));
         let legacy = game.join(format!("save/save{}.json", slot + 1));
         let preview = if is_file(&native)? {
@@ -48,12 +51,12 @@ pub fn read_game_saves(game: &Path) -> Result<GameSaves, String> {
             Some(Err(error)) => (None, Some(error)),
             None => (None, None),
         };
-        states.push(SaveStateInfo {
-            slot,
+        *state = SaveStateInfo {
+            slot: slot as u32,
             exists,
             thumbnail,
             preview_error,
-        });
+        };
     }
     Ok(GameSaves {
         states,

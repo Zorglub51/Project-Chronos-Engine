@@ -2,6 +2,12 @@
 
 Canonical scripts deployed on the console for the USB stick library workflow.
 
+The development runtime now reads the editor's source library directly, without
+publishing folder packs. Initial native menus/navigation have been validated
+in the Linux VM; full-limit, long-session and physical A33 validation are ongoing. This is
+not yet a published console runtime release. See [V2 implementation and
+validation](../docs/V2-runtime-library.md).
+
 The bundled hook supports both Japanese (`040`, `1006JP`) and international
 (`041`, `1006WW`) resources. See [console variants](../docs/CONSOLE-VARIANTS.md)
 for template detection and model-specific PSB filenames.
@@ -40,15 +46,24 @@ for template detection and model-specific PSB filenames.
 ## What stays on NAND vs what comes from USB
 
 The mod leaves the original application partition intact. On USB, `/game/`
-holds the engine, extracted resources, patched scripts and hook; published ROMs
-and lineup packs live under `/library/published/`. `mount-usb-drives` binds
+holds the engine, extracted resources, patched scripts and hook. Source JSON,
+individual prepared images and per-game saves live under `/library/`.
+`mount-usb-drives` binds
 `/mnt/usb/game` over `/usr/game`, so the engine uses its usual paths.
+
+For the library runtime, P7 only supplies the startup/mount bootstrap. It does
+not contain an authoritative hook/script bundle or overlay one over the USB
+key. The editor installs the ARM hook and eight packed overrides in `game/`
+when creating or opening a complete library. Runtime updates therefore travel
+with the key. Original resources still come from the owner's console dump.
 
 Published ROMs live only in `/mnt/usb/library/published/roms/`. After the game
 mount, both cold boot and hot-plug use the same helper to bind that directory
 over `/usr/game/system/roms/`. The physical `game/system/roms/` directory may be
 empty. No copy or symlink is needed on FAT32. A missing published ROM directory
 rejects the stick; a failed ROM mount rolls back the partial game mount.
+The directory name is retained for launcher compatibility; source libraries
+do not generate `published/folders/` packs. Old archives may remain for recovery.
 
 Install all updated USB scripts together, including `pce-usb-lib.sh`: the boot
 script now calls the shared mount helper. On replacement, stop the engine before
@@ -59,8 +74,16 @@ unplug still forcibly stops the engine and cannot guarantee pending saves.
 ## What the engine actually picks up from USB
 
 The bind makes `/usr/game/lib/m2hook_print.so` exist (it's `/mnt/usb/game/lib/m2hook_print.so`). Our `gameapp` checks for this file and conditionally sets `LD_PRELOAD` before exec'ing `./m2engage`. So:
-- Bind active (USB plugged): hook + probe_gl loaded → custom lineup behaviour.
+- Bind active (USB plugged): the USB hook and script overrides enable the
+  source library when `library/.chronos-library-v2` contains `2` plus a newline;
+  legacy keys without that marker keep their pack workflow.
 - Bind absent (stock boot): no preload, vanilla engine.
+
+`ChronosLibrary` reads only the current folder's JSON snapshot. The native
+cover pool holds seven large images plus at most fifty 48×48 thumbnails.
+Image PSBs and bitmap glyphs are prepared by the editor; the A33 does not
+decode source PNGs or generate cover PSBs during navigation. The last
+successfully loaded lineup/folder is stored in `library/.current-v2`.
 
 ## Test matrix
 
@@ -72,7 +95,7 @@ on the console; the Linux VM engine test does not exercise console startup.
 `library/published/save/` is mounted over `/usr/game/save/` too. The editor reads
 settings and active SRAM from this same location. New keys have an empty
 `game/save/` directory. Existing live saves in that directory are preserved by
-publication, and the launcher refuses to hide them: migrate them explicitly
+library preparation, and the launcher refuses to hide them: migrate them explicitly
 before upgrading an old key. No personal saves are imported by the test-kit
 builder.
 
@@ -88,6 +111,18 @@ the extracted `.bin`.
 The same tool extracts fresh resources and six games from the owner's original
 `alldata.bin`, copies the reference library's game metadata/covers, publishes
 three folders and both lineups, and packages a FAT32-compatible example key.
+That full-kit builder still exercises legacy publication. Open the resulting
+complete key with the current editor to prepare source mode, or use the
+development CLI explicitly:
+
+```sh
+editor/target/debug/m2-publish --prepare-source /path/to/USB /path/to/USB/library/templates
+```
+
+Source preparation preserves legacy archives and saves while adding identities,
+individual images, fixed motion sheets, fonts and the bundled runtime. It does
+not flash the console or publish another set of folder packs.
+
 Run `python3 tools/build-test-kit.py --help` for the explicit input paths. Original
 images, engines and ROMs are not committed to this repository.
 
@@ -127,7 +162,43 @@ bind; it is expected. A successful bind should report `same_inode=yes`.
 Failures are logged even when detailed tracing is disabled. Diagnostics never
 print save contents. No `.nut` changes are required for these traces.
 
-### Folder IO and SRAM persistence
+### Source-folder IO and per-game persistence
+
+Creating/opening a complete library enables the per-game adapter described in
+[save storage](../editor/docs/per-game-saves.md). The matching hook and eight
+script overrides are installed together on the USB key, independently of P7.
+The eight are `const`, `mode_demo`, `mode_title_select`, `utils`, `emulator`,
+`systemdata_saveload`, `pause_main` and `backup`. Catalogue/cover/save helpers
+are appended to utils at packaging time, not loaded as extra script files.
+Native state filenames
+become temporary aliases for four permanent slots inside each game directory;
+source-folder navigation does not bind, copy or rename those state files.
+Slots are displayed as 1–4, preserve empty positions, and carry per-game locks.
+Stable `game_id` and native tags survive reordering and folder/lineup moves.
+
+SRAM uses one common native slot at offset `0x5e84`, one `EmuSram` working object
+and a verified stable owner. Outgoing capture happens before stock title-context
+changes. The incoming owner is committed only after successful native
+initialization; native autosaves capture and flush its SRAM immediately.
+Navigation initialization disables SRAM and releases the owner. NAND recovery
+is outside the USB bind mount at `/rootfs_data/.chronos-sram-recovery`.
+This location uses the writable native save filesystem and is created as
+needed; personal recovery files do not belong in a distributable P7 image.
+
+Build the Rust MZS CLI, then run
+`python3 mod-assets/build-scripts.py --mzs editor/target/debug/m2-mzs`
+from the repository root. The save adapter is appended to utils at packaging time; nesting a script
+load while native boot executes `Resource.exec` would deadlock.
+
+The first source-mode upgrade imports eligible legacy saves using the last
+published game mapping. `library/published/.per-game-saves-v2` prevents stale
+positional archives from overwriting canonical saves afterward. An uncertain
+owner or invalid native data/metadata pair is retained and reported.
+
+### Legacy pack compatibility
+
+The remainder of this section describes compatibility with legacy exports,
+which have no `.per-game-saves-v2` marker.
 
 The menu saves the outgoing context before `beginGameFolderSwap(tag)`, then
 polls `pollGameFolderSwap()` once per rendered frame. One transient worker

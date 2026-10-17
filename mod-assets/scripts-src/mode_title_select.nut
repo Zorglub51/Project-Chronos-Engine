@@ -12,6 +12,9 @@ const SORTTYPE_DATE = 1;
 const SORTTYPE_GENRE = 2;
 const SORTTYPE_PLNUM = 3;
 
+// Width bound is needed by both the submenu error and package title methods.
+const INDEX_LENGTH_MAX = 700;
+
 
 //プライオリティ
 const PRI_BG_BACK = 0;
@@ -58,6 +61,7 @@ s_in_folder <- false;
 // MenuModeSelectPkg for it indexes an empty array and leaves a black screen.
 function can_enter_lineup(lineup)
 {
+    if (::chronos_library_enabled()) return true; // Empty lineups are valid V2 snapshots.
 	local name = (lineup == LINEUP_JP) ? "jp" : "us";
 	// Resource paths are relative to /usr/game, even with a leading slash.
 	local path = "../../mnt/usb/library/published/folders/" + name + "/_root/title_mode_top.psb";
@@ -81,6 +85,22 @@ function can_enter_lineup(lineup)
 // active regionTag and SRAM objects. Refresh them before settings can autosave.
 function refresh_pack_save_context()
 {
+    if (::chronos_library_enabled()) {
+        ::s_current_title_prof = null;
+        ::s_package_title_prof = null;
+        ::_del_game_content_config();
+        ::_init_game_content_config();
+        local versions = ::get_current_title_prof().m2epi.version;
+        local tag = ::g_systemdata.get_data_setting_etc__game_regionTag();
+        if (!(tag in versions))
+            ::g_systemdata.set_data_setting_etc__game_regionTag(
+                ::get_current_title_prof().game_versions_default.japan);
+        ::chronos_refresh_save_bindings();
+        ::chronos_reload_sram();
+        ::g_frameCount.setSaveExec(0);
+        if (::g_demo_control != null) ::g_demo_control.reload_config();
+        return;
+    }
     ::s_current_title_prof = null;
     ::s_package_title_prof = null;
     ::s_rsc_title = null;
@@ -104,6 +124,14 @@ function refresh_pack_save_context()
             }
         }
         ::g_systemdata.set_data_setting_etc__game_regionTag(tag);
+    }
+
+    if (::chronos_save_enabled()) {
+        ::chronos_refresh_save_bindings();
+        ::chronos_reload_sram();
+        ::g_frameCount.setSaveExec(0);
+        printf("[CHRONOS-SAVE] folder bindings ready; current SRAM owner retained\n");
+        return;
     }
 
     // Read the slice installed by the hook without restoring old menu flags
@@ -151,6 +179,9 @@ const KEYWAIT_PKG = 12;
 
 function getMotionPath()
 {
+    if (::chronos_library_enabled())
+        return "system/motion/chronos_titleselect_" +
+               ((s_last_linenp == LINEUP_JP) ? "jp" : "us") + ".psb";
 	//本体リージョンに合わせて読み込むモーションを変える
 	local devid = ::get_package_dev_id();
 	local path = null;
@@ -187,6 +218,7 @@ function getMotionPath()
 //選択されたロムテーブルを取得する
 function getlastIndex( index = null )
 {
+    if (s_titleNum == 0) return LINEUPMAX;
 	if( index == null )
 	{
 		return s_indextable[s_last_index];
@@ -289,6 +321,7 @@ function getPkgIndex( id, sortType, config )
 
 function getLinenpOffsetConfigData( idx, tag )
 {
+    if (s_titleNum == 0) return m_config["items"][0][tag];
 	local indexoffset = getLinenpIndexOffset( );	//起動するリージョンによってオフセットを加える
 	local sortindex = s_indextable[idx] + indexoffset;
 
@@ -488,7 +521,11 @@ function mode_title_select(_menu_motion = null, _start_pad_id = null)
 
 	::resume_title_select_bgm();
 
-	menu.exec();
+    try { menu.exec(); }
+    catch (error) {
+        printf("[CHRONOS-LIB] title menu failed: %s\n", error.tostring());
+        throw error;
+    }
 
 	return ;
 }
@@ -695,6 +732,12 @@ class MenuModeTitleSelect extends MenuModeTitleSelectBase {
     
 //    ::util_load_script("system/script/mode_select_list.nut");
     m_config = ::util_load_config( ::conv_path("config/title_mode_top.psb") );
+        if (::chronos_library_enabled()) {
+            local current = ::chronos_library().snapshot;
+            s_last_linenp = current.lineup == "jp" ? LINEUP_JP : LINEUP_US;
+            m_current_linenp = s_last_linenp;
+            ::s_in_folder = current.folder != "_root";
+        }
 		printf("[FH-CFG] reload title_mode_top: titleNum=%d titleNumTG=%d items.len=%d s_last_linenp=%d\n",
 		       m_config["titleNum"], m_config["titleNumTG"], m_config["items"].len(), s_last_linenp);
 
@@ -708,7 +751,7 @@ class MenuModeTitleSelect extends MenuModeTitleSelectBase {
 			                          ? m_config["titleNum"] : m_config["titleNumTG"];
 			local count_for_other   = (s_last_linenp == LINEUP_JP)
 			                          ? m_config["titleNumTG"] : m_config["titleNum"];
-			if (count_for_current == 0 && count_for_other > 0) {
+			if (!::chronos_library_enabled() && count_for_current == 0 && count_for_other > 0) {
 				local new_linenp = (s_last_linenp == LINEUP_JP) ? LINEUP_US : LINEUP_JP;
 				printf("[FH-CFG] mismatch: s_last_linenp=%d count=0 (other=%d). Flipping s_last_linenp to %d.\n",
 				       s_last_linenp, count_for_other, new_linenp);
@@ -844,6 +887,7 @@ class MenuModeTitleSelect extends MenuModeTitleSelectBase {
   // otherwise it init's the stale BACK card / wrong game and hangs.
   function before_change_title() {
     local regionTag = this._resolve_selected_regionTag();
+    ::chronos_prepare_game_change(regionTag);
     ::g_systemdata.get_value(SystemDataValueIndex.SETTING_ETC).set_game_regionTag(regionTag);
     printf("[FH-LAUNCH] before_change_title: set regionTag=%s\n", regionTag);
   }
@@ -914,7 +958,7 @@ class MenuModeTitleSelectSub {
   	m_current_index = current_index;
 		if( m_current_index >= s_titleNum )
 		{
-			m_current_index = s_titleNum - 1;
+			m_current_index = s_titleNum > 0 ? s_titleNum - 1 : 0;
 		}
 
   	m_current_sortType = current_sortType;
@@ -929,8 +973,10 @@ class MenuModeTitleSelectSub {
 
     m_rsc = Resource();
     m_rsc.load( motion_path );
-    while (m_rsc.loading)
+    while (m_rsc.loading) {
+      this.animate_folder_wait();
       wait(0);
+    }
     printf("[FH-SUB] ctor: m_rsc loaded\n");
   }
 
@@ -1036,8 +1082,11 @@ class MenuModeTitleSelectSub {
 			m_motion_bg_back[i].progress();
 		}
 
-		m_selectPkg = MenuModeSelectPkg( m_config, m_motion_bg, m_motion_bg_down, m_rsc );
-		m_selectPkg.setImageID( m_current_sortType );
+        if (m_selectPkg != null) m_selectPkg.close();
+        local owner = this;
+		m_selectPkg = MenuModeSelectPkg(m_config, m_motion_bg, m_motion_bg_down, m_rsc,
+            true, function():(owner) { owner.animate_folder_wait(); });
+		m_selectPkg.setImageID(m_current_sortType, false);
 		m_selectPkg.setIndex(m_current_index);
 
     m_layerText = ScaledLayer(::util_get_menu_layerFolder());
@@ -1097,6 +1146,7 @@ class MenuModeTitleSelectSub {
 		setTextOffset( );
 		setFukidashiCount(  );
 		setSortType( m_current_sortType );
+        printf("[CHRONOS-LIB] menu initialized\n");
 	}
 
 	function exec( caption )
@@ -1242,14 +1292,25 @@ class MenuModeTitleSelectSub {
 								// Fade the outgoing pack out before the swap. The rebuild
 								// below constructs a fresh m_selectPkg with fadeIn=true so
 								// the new pack fades up symmetrically.
-								if (m_selectPkg != null) m_selectPkg.fadeOut();
+								if (!::chronos_library_enabled() && m_selectPkg != null) m_selectPkg.fadeOut();
 
                                 local tag = getLinenpOffsetConfigData(m_current_index, "regionTag");
                                 if (csize == 11) {
                                     local lineup = (m_current_linenp == LINEUP_JP) ? "jp" : "us";
                                     tag = "FOLDER_" + lineup + "__root";
                                 }
-                                this.wait_folder_swap(tag);
+                                local previous_folder = null;
+                                if (::chronos_library_enabled()) {
+                                    local previous = ::chronos_library().snapshot;
+                                    previous_folder = { lineup = previous.lineup, folder = previous.folder,
+                                        index = m_selectPkg.getIndex(), sort = m_current_sortType };
+                                    tag = getLinenpOffsetConfigData(m_current_index, "chronos_folder");
+                                }
+                                if (!this.wait_folder_swap(tag)) continue;
+                                if (previous_folder != null) {
+                                    this.finish_source_folder_swap(previous_folder, (csize == 10) ? 1 : 0);
+                                    continue;
+                                }
                                 ::s_in_folder = (csize == 10);
 
 								::refresh_pack_save_context();
@@ -1269,19 +1330,23 @@ class MenuModeTitleSelectSub {
 								// engine's "active" list. Without this, m_rsc.unload() leaves the
 								// resource active and System.clearResourceCache() can't evict it
 								// (it only drops IDLE cache entries). Order matters here.
+                                if (m_selectPkg != null) m_selectPkg.close();
 								m_selectPkg = null;
-								m_rsc.unload();
-								m_rsc = null;
-								System.clearResourceCache();
-
-								m_rsc = Resource();
-								m_rsc.load(motion_path);
-                                while (m_rsc.loading) { this.animate_folder_wait(); wait(0); }
+                                if (!::chronos_library_enabled()) {
+								    m_rsc.unload();
+								    m_rsc = null;
+								    System.clearResourceCache();
+								    m_rsc = Resource();
+								    m_rsc.load(motion_path);
+                                    while (m_rsc.loading) { this.animate_folder_wait(); wait(0); }
+                                }
 
 								// fadeIn=true (default) so folder enter/exit gets the same
 								// fade-up animation as fresh menu construction.
-								m_selectPkg = MenuModeSelectPkg(m_config, m_motion_bg, m_motion_bg_down, m_rsc);
-								m_selectPkg.setImageID( m_current_sortType );
+                                local owner = this;
+								m_selectPkg = MenuModeSelectPkg(m_config, m_motion_bg, m_motion_bg_down, m_rsc,
+                                    true, function():(owner) { owner.animate_folder_wait(); });
+								m_selectPkg.setImageID(m_current_sortType, false);
 								m_selectPkg.setIndex( (csize == 10) ? 1 : 0 );  // enter: skip back card
 								m_selectPkg.setVisible( true );
 							}
@@ -1550,14 +1615,8 @@ class MenuModeTitleSelectSub {
 							if (!::g_systemdata.TryAutosave(true)) break;
 							::g_menu_sound.on_power_off();
 							{
-								// FOLDER HACK: per-lineup cursor memory (root-only).
-								// m_current_index doesn't track scrolling — only updates on A
-								// or demo entry — so read the live cursor from m_selectPkg.
-								// If we're inside a folder, the live cursor is for the folder
-								// pack, NOT the lineup root. Don't pollute the per-lineup root
-								// memory with a folder cursor; leave the saved value alone.
-								// The lineup toggle always swaps to <new>/_root (not into a
-								// folder), so on incoming we always restore the root cursor.
+								// Legacy packs remember root cursors; source mode also keeps the
+								// current folder's live cursor for the return to this lineup.
 								local outgoing = m_current_linenp;
 								local incoming = (m_current_linenp == LINEUP_JP) ? LINEUP_US : LINEUP_JP;
 								local live_idx = m_selectPkg.getIndex();
@@ -1567,9 +1626,14 @@ class MenuModeTitleSelectSub {
 								} else {
 									printf("[FH-LINEUP] in folder, skip save (live=%d)\n", live_idx);
 								}
-								// Toggle leaves any folder context — we're heading to <new>/_root.
+								// Legacy root context is reset; source mode restores its remembered folder below.
 								::s_in_folder = false;
 								local restored = ::s_last_index_per_linenp[incoming];
+                                if (::chronos_library_enabled()) {
+                                    ::chronos_library().remember_cursor(live_idx);
+                                    restored = ::chronos_library().locations[
+                                        incoming == LINEUP_JP ? "jp" : "us"].cursor;
+                                }
 								printf("[FH-LINEUP] restore root idx[%d]=%s\n",
 								       incoming, restored == null ? "null" : restored.tostring());
 								m_current_index = (restored != null) ? restored : 0;
@@ -1585,7 +1649,9 @@ class MenuModeTitleSelectSub {
 								local new_lineup = (m_current_linenp == LINEUP_JP) ? "jp" : "us";
 								local tag = "FOLDER_" + new_lineup + "__root";
 								printf("[FH-LINEUP] toggle to %s, swapping to %s\n", new_lineup, tag);
-                                this.wait_folder_swap(tag);
+                                if (::chronos_library_enabled())
+                                    tag = ::chronos_library().locations[new_lineup].folder;
+                                if (!this.wait_folder_swap(tag)) break;
 								::s_current_title_prof = null;
 								::s_rsc_title = null;
 								local tp_path  = ::conv_path("config/title_prof.psb");
@@ -1756,6 +1822,7 @@ class MenuModeTitleSelectSub {
 						if( ::g_demo_control.check(this) )
 						{
 							m_current_index = m_selectPkg.getIndex();	//デモに入った時のカーソル位置を保存
+                            m_selectPkg.close();
 							return( false );
 						}
 					}
@@ -1798,6 +1865,7 @@ class MenuModeTitleSelectSub {
     
 ::g_frameCount.logFileWrite("mainloop exit 1");
 
+        if (m_selectPkg != null) m_selectPkg.close();
     if( reboot == false )
     {
 ::g_frameCount.logFileWrite("mainloop exit 2");
@@ -1813,11 +1881,89 @@ class MenuModeTitleSelectSub {
 		
 	}
 
+    // Static motions stay loaded. Only one folder's Image pool is retained,
+    // including when a constructor or the sorted first selection fails.
+    function rebuild_source_folder_package(index, fade_in = true)
+    {
+        ::refresh_pack_save_context();
+        m_config = ::util_load_config(::conv_path("config/title_mode_top.psb"));
+        s_titleNum = m_config[s_last_linenp == LINEUP_JP ? "titleNum" : "titleNumTG"];
+        m_keywait = KEYWAIT;
+        if (m_selectPkg != null) m_selectPkg.close();
+        m_selectPkg = null;
+        local owner = this;
+        local next = MenuModeSelectPkg(m_config, m_motion_bg, m_motion_bg_down, m_rsc,
+            fade_in, function():(owner) { owner.animate_folder_wait(); });
+        try {
+            next.setImageID(m_current_sortType, false);
+            next.setIndex(index);
+            next.setVisible(true);
+        } catch (error) {
+            next.close();
+            throw error;
+        }
+        m_selectPkg = next;
+        m_current_index = next.getIndex();
+        ::chronos_library().remember_cursor(m_current_index);
+    }
+
+    function finish_source_folder_swap(previous, index)
+    {
+        try {
+            ::s_in_folder = ::chronos_library().snapshot.folder != "_root";
+            rebuild_source_folder_package(index);
+            return true;
+        } catch (error) {
+            printf("[CHRONOS-LIB] folder artwork rejected: %s\n", error.tostring());
+            local owner = this;
+            try {
+                // Read again rather than restoring only a Squirrel view: the
+                // native snapshot, save bindings and remembered path agree.
+                ::chronos_library().read(previous.lineup, previous.folder,
+                    function():(owner) { owner.animate_folder_wait(); });
+                m_current_linenp = previous.lineup == "jp" ? LINEUP_JP : LINEUP_US;
+                ::s_last_linenp = m_current_linenp;
+                ::s_in_folder = previous.folder != "_root";
+                m_current_sortType = previous.sort;
+                ::s_last_sortType = previous.sort;
+                ::s_last_index = previous.index;
+                rebuild_source_folder_package(previous.index, false);
+                ::g_frameCount.setSaveExec(0);
+            } catch (recovery_error) {
+                ::g_frameCount.setSaveExec(0);
+                throw "Cannot open folder: " + error.tostring() +
+                    "; previous menu could not be restored: " + recovery_error.tostring();
+            }
+            show_folder_error(error.tostring());
+            return false;
+        }
+    }
+
     // IO-only native worker; all graphics and VM operations stay on this thread.
     // The emulator is already paused in the title menu. The normal input/demo/
     // shutdown handlers resume only after refresh_pack_save_context completes.
     function wait_folder_swap(tag)
     {
+        if (::chronos_library_enabled()) {
+            ::chronos_flush_sram();
+            ::g_frameCount.setSaveExec(1);
+            local owner = this;
+            try {
+                ::chronos_library().read(m_current_linenp == LINEUP_JP ? "jp" : "us",
+                    tag, function():(owner) { owner.animate_folder_wait(); });
+                return true;
+            } catch (error) {
+                local previous = ::chronos_library().snapshot;
+                m_current_linenp = previous.lineup == "jp" ? LINEUP_JP : LINEUP_US;
+                s_last_linenp = m_current_linenp;
+                ::s_in_folder = previous.folder != "_root";
+                ::g_frameCount.setSaveExec(0);
+                show_folder_error(error.tostring());
+                return false;
+            }
+        }
+        // TryAutosave above has already persisted the outgoing native bank.
+        ::chronos_flush_sram();
         ::g_frameCount.setSaveExec(1);
         if (::beginGameFolderSwap(tag) != "busy")
             throw "Cannot start folder swap";
@@ -1831,15 +1977,34 @@ class MenuModeTitleSelectSub {
         }
         printf("[FH-SWAP] animated wait: %d frames, result=%s\n", frames, status);
         if (status != "ok") throw "Folder swap failed; save context not activated";
+        return true;
+    }
+
+    function show_folder_error(message)
+    {
+        printf("[CHRONOS-LIB] navigation rejected: %s\n", message);
+        ::g_menu_sound.on_ng();
+        m_selectPkg.m_text_Title.print("#{color,000000FF}Cannot open this folder. Check the library.");
+        IndicatorSetXScale(m_selectPkg.m_text_Title, INDEX_LENGTH_MAX);
+        m_selectPkg.m_text_Title.visible = true;
+        for (local frame = 0; frame < 240; frame++) {
+            animate_folder_wait();
+            wait(0);
+            if (frame > 15 && (::g_input.keyPressed(KEY.A) || ::g_input.keyPressed(KEY.B))) break;
+        }
+        m_selectPkg.nameTextUpdate();
     }
 
     function animate_folder_wait()
     {
-        for (local i = 0; i < NECKUN_NUM; i++) m_pceKun[i].exec();
-        for (local i = 0; i < BGBACK_NUM; i++) {
+        // First menu construction loads artwork before creating the PceKun
+        // instances. During later loads, advance their stock movement logic.
+        if (m_pceKun != null) foreach (character in m_pceKun) character.exec();
+        if (m_motion_bg_back != null) foreach (motion in m_motion_bg_back) {
+            if (motion == null) continue;
             for (local j = 1; j <= 8; j++) {
                 local yure = (::get_yure(::g_bg_count + (j * 20), 50, 4) / 100.0) + 0.5;
-                m_motion_bg_back[i].setVariable("bgillustration0" + j.tostring(), yure);
+                motion.setVariable("bgillustration0" + j.tostring(), yure);
             }
         }
         ::g_bg_count++;
@@ -2175,7 +2340,6 @@ const LANGUAGE_GER = 5;
 
 //320
 const PKGNAME_TEXTOFFSET_Y = 169;
-const INDEX_LENGTH_MAX = 700;
 const PKG_W = 320.0;
 const PKG_Y = -10;
 const SLIDEWAIT = 5;
@@ -2185,6 +2349,9 @@ const THUMBNAIL_X = -300;
 const THUMBNAIL_Y = -194;
 class MenuModeSelectPkg
 {
+    m_chronos_covers = null;
+    m_animate_wait = null;
+    m_pending_motion_resource = null;
 	m_layer = null;
 	m_layer_s = null;
 	m_layer_cursol = null;
@@ -2220,15 +2387,16 @@ class MenuModeSelectPkg
 	// makes _init() set motion opacity straight to 255 instead of 0.
 	m_fadeIn = null;
 
-  constructor( config, motion_bg, motion_bg_down, rsc, fadeIn = true )
+  constructor(config, motion_bg, motion_bg_down, rsc, fadeIn = true, animate = null)
   {
 		m_fadeIn = fadeIn;
+        m_animate_wait = animate;
 		m_motion_bg = motion_bg;
 		m_motion_bg_down = motion_bg_down;
 		m_config = config;
 		m_index = 0;
 		// Small catalogues have fewer cards than the stock center slot (2).
-		m_center_index = (s_titleNum > CUNTERINDEX) ? CUNTERINDEX : s_titleNum - 1;
+		m_center_index = (s_titleNum > CUNTERINDEX) ? CUNTERINDEX : (s_titleNum > 0 ? s_titleNum - 1 : 0);
 		m_count = 0;
 		m_move = 0;
 		m_isVisible = false;
@@ -2250,14 +2418,11 @@ class MenuModeSelectPkg
 		m_layer.visible = true;
 		m_layer.smoothing = MOTSMOOTHING;
 		m_layer.priority = PRI_PKG;
-		m_layer.registerMotionResource(rsc.find(motion_path));  // レイヤにモーションリソースを登録
-		m_layer.registerMotionResource(s_rsc.find(s_ui_motionPath));  // レイヤにモーションリソースを登録
 
 		m_layer_s = ScaledLayer();
 		m_layer_s.visible = true;
 		m_layer_s.smoothing = true;
 		m_layer_s.priority = PRI_PKG;
-		m_layer_s.registerMotionResource(rsc.find(motion_path));  // レイヤにモーションリソースを登録
 		
 		m_layer_title = ScaledLayer();
 		m_layer_title.visible = true;
@@ -2279,10 +2444,20 @@ class MenuModeSelectPkg
 		m_text_Title.print(_str);
 		m_text_Title.setCoord( 0, ( PKGNAME_TEXTOFFSET_Y - getFont32Yoffset() ) );
 
-		_init();
+        if (::chronos_library_enabled())
+            m_chronos_covers = ChronosCoverPool(m_config, m_layer, m_layer_s, m_animate_wait);
+        m_pending_motion_resource = rsc.find(motion_path);
+        // Native resource/motion construction can cache slot zero. For a
+        // source folder, bind its final sorted image window before either.
+        if (m_chronos_covers == null || s_titleNum == 0) _init();
 	}
 	function _init()
 	{
+        if (m_pkgselect_motion != null) return;
+        m_layer.registerMotionResource(m_pending_motion_resource);
+        m_layer.registerMotionResource(s_rsc.find(s_ui_motionPath));
+        m_layer_s.registerMotionResource(m_pending_motion_resource);
+        m_pending_motion_resource = null;
 		m_pkgselect_motion = [];
 		m_pkgselect_s_motion = [];
     local i = 0;
@@ -2336,6 +2511,7 @@ class MenuModeSelectPkg
 	
 	function lKey( )
 	{
+        if (s_titleNum <= 1) return;
 		if( m_move == 0 )
 		{
 			m_move = 1;
@@ -2345,6 +2521,7 @@ class MenuModeSelectPkg
 	}
 	function rKey( )
 	{
+        if (s_titleNum <= 1) return;
 		if( m_move == 0 )
 		{
 			m_move = -1;
@@ -2355,6 +2532,7 @@ class MenuModeSelectPkg
 
 	function move_l( )
 	{
+        if (s_titleNum <= 1) return;
 		local l = m_pkgselect_work[0];
 
     local i = 0;
@@ -2366,6 +2544,7 @@ class MenuModeSelectPkg
 	}
 	function move_r( )
 	{
+        if (s_titleNum <= 1) return;
 		local r = m_pkgselect_work[s_titleNum - 1];
 
     local i = 0;
@@ -2379,6 +2558,14 @@ class MenuModeSelectPkg
 
 	function exec( )
 	{
+        if (m_chronos_covers != null && !m_isExec) m_chronos_covers.tick();
+        if (s_titleNum == 0) {
+            m_cursol_motion.visible = false;
+            m_thumbnail_cursol_motion.visible = false;
+            m_text_Title.visible = m_isVisible;
+            if (m_isVisible) wait(0);
+            return;
+        }
 		if( m_isExec == false )
 		{
 			if( m_move != 0 )
@@ -2553,16 +2740,19 @@ class MenuModeSelectPkg
 
 	}
 	
-	function setImageID( sort )
+	function setImageID(sort, update = true)
 	{
 		m_sort = sort;
 		indexTableUpdate();
-		selectPkgUpdate();
+        // Constructors apply the final cursor immediately afterwards. Let
+        // setIndex load that window once instead of loading an unused window.
+		if (update) selectPkgUpdate();
 
 	}
   function setVisible( flg )
   {
 		m_isVisible = flg;
+        if (flg && s_titleNum == 0) nameTextUpdate();
 	}
 	// FOLDER HACK: synchronous fade-out before a folder swap. Decrements
 	// per-package and per-thumbnail opacity over `frames` frames; caller
@@ -2586,6 +2776,7 @@ class MenuModeSelectPkg
 			}
 			if (m_cursol_motion != null) m_cursol_motion.opacity = o;
 			if (m_thumbnail_cursol_motion != null) m_thumbnail_cursol_motion.opacity = o;
+            if (m_animate_wait != null) m_animate_wait();
 			wait(0);
 		}
 	}
@@ -2596,6 +2787,7 @@ class MenuModeSelectPkg
 	
 	function setIndex( idx )
 	{
+        if (s_titleNum == 0) { nameTextUpdate(); return; }
 
 		m_index = (idx >= 0 && idx < s_titleNum) ? idx : 0;
 		
@@ -2620,17 +2812,30 @@ class MenuModeSelectPkg
 		}
 		printf( "m_index = %d\n",m_index );
 */
-		nameTextUpdate();
-		selectPkgUpdate();
+        if (m_pkgselect_motion == null) {
+            // The source constructor has no cursor until final image binding.
+            selectPkgUpdate();
+            nameTextUpdate();
+        } else {
+		    nameTextUpdate();
+		    selectPkgUpdate();
+        }
 	}
 
 	function selectPkgUpdate()
 	{
+        if (s_titleNum == 0) return;
+        if (m_chronos_covers != null) m_chronos_covers.sync(m_pkgselect_work);
+        if (m_pkgselect_motion == null) {
+            _init();
+            indexTableUpdate(); // Apply thumbnail mapping after their creation.
+        }
 		local i = 0;
     for ( i = 0; i < s_titleNum; i++ )
     {
 			local selectindex = m_pkgselect_work[i];
 			local image = getLinenpOffsetConfigData(selectindex, "image");
+            if (m_chronos_covers != null) image = m_chronos_covers.slot(selectindex, i < 5);
 			local ccolor = getLinenpOffsetConfigData(selectindex, "ccolor");
 			local csize = getLinenpOffsetConfigData(selectindex, "csize");
 
@@ -2684,6 +2889,17 @@ class MenuModeSelectPkg
 	}
 	function nameTextUpdate()
 	{
+        if (s_titleNum == 0) {
+            m_text_Title.print("#{color,000000FF}No games in this folder");
+            IndicatorSetXScale(m_text_Title, INDEX_LENGTH_MAX);
+            m_text_Title.visible = m_isVisible;
+            foreach (target in [m_motion_bg, m_motion_bg_down]) {
+                target.setVariable("titlebar", 0);
+                target.setVariable("playernum", 0);
+                for (local i = 1; i <= 4; i++) target.setVariable("saveslot" + i.tostring(), 0);
+            }
+            return;
+        }
 
 		//タイトル設定
 		local selectindex = m_pkgselect_work[m_center_index];
@@ -2800,6 +3016,7 @@ class MenuModeSelectPkg
 	}
 	function indexTableUpdate()
 	{
+        for (local cleared = 0; cleared < LINEUPMAX; cleared++) s_indextable[cleared] = LINEUPMAX;
 		local i = 0;
 		for ( i = 0; i < s_titleNum; i++ )
 		{
@@ -2810,6 +3027,7 @@ class MenuModeSelectPkg
 			local index = getPkgIndex( i, m_sort, m_config );
 			s_indextable[index] = i;
 		}
+        if (m_pkgselect_s_motion == null) return;
 		for ( i = 0; i < s_titleNum; i++ )
 		{
 			local selectindex = i;
@@ -2829,6 +3047,18 @@ class MenuModeSelectPkg
 		}
 	}
 	
+    function close()
+    {
+        // At folder/menu exit animations no longer use these registrations.
+        m_isVisible = false;
+        foreach (layer in [m_layer, m_layer_s, m_layer_title, m_layer_cursol])
+            if (layer != null) layer.visible = false;
+        if (m_chronos_covers != null) m_chronos_covers.close();
+        m_chronos_covers = null;
+        m_animate_wait = null;
+        m_pending_motion_resource = null;
+    }
+
 	function getIndex()
 	{
 		return( m_index );
@@ -2854,6 +3084,7 @@ class MenuModeSelectPkg
 
 		local selectindex = m_pkgselect_work[m_center_index];
 		local image = getLinenpOffsetConfigData( selectindex, "image" );
+        if (m_chronos_covers != null) image = m_chronos_covers.slot(selectindex);
 		local csize = getLinenpOffsetConfigData( selectindex, "csize" );
 		m_exec_motion = Motion(m_layer);
 		m_exec_motion.chara   = getGameStartBGMotionName();

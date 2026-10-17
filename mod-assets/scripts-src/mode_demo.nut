@@ -116,6 +116,8 @@ class ModeDemo
     // mode_title_select.nut. (Originally this called ::isInGameFolder() —
     // a m2engage-mac C++ binding that doesn't exist in stock m2engage.)
     if (::s_in_folder) return false;
+    if (::chronos_library_enabled() && ::chronos_library().snapshot.playable_count == 0)
+      return false;
 
     if ( !::g_input.key(KEY.ALL & ~KEY.R5) )	// 3Button 判定用のキーだけマスク
     {
@@ -206,7 +208,8 @@ printf( "-------\n" );
           continue;
         }
         // Skip folder entries — they are not playable games
-        if( regionTag.find("FOLDER_") == 0 || regionTag == "FOLDER_BACK" )
+        if( regionTag.find("FOLDER_") == 0 || regionTag == "FOLDER_BACK" ||
+            ("chronos_role" in item && item.chronos_role != "game") )
         {
           this.next();
           continue;

@@ -1,0 +1,77 @@
+{
+  "game_id": "0123456789abcdef0123456789abcdef",
+  "native_region_tag": "GAME700",
+  "display": {
+    "name": "Expert fixture",
+    "tname": "Expert fixture",
+    "name_eng": "Expert fixture",
+    "titlebar": 4,
+    "ccolor": 0,
+    "csize": 0,
+    "players": 2,
+    "demo_time": 6120,
+    "action": "Boot",
+    "copy": "Test copyright",
+    "desc": "Fixture description"
+  },
+  "emulator": {
+    "ScreenMode": 4,
+    "EmuOfsX": -8,
+    "EmuOfsY": 2
+  },
+  "rom": {
+    "arch": "tg16",
+    "country": "us",
+    "preamp": 6.94,
+    "rom": "fixture.pce",
+    "overdrive": 2,
+    "brightness": 0.85,
+    "tg16_option": 5,
+    "tg16pad_type": 7,
+    "tg16_hblank": 100,
+    "direction": 4,
+    "use_analog": false,
+    "player_num": 2,
+    "player_input_num": 2,
+    "rapid_speed_list": [
+      10,
+      12,
+      15,
+      20,
+      30
+    ],
+    "view_split": [
+      2,
+      1
+    ],
+    "sram_support": false,
+    "attr": {
+      "compat": 17
+    },
+    "string": {
+      "compat": "test"
+    },
+    "stringGlobal": {
+      "unused": "kept"
+    },
+    "extra_info": 17,
+    "disable_md_6B": true,
+    "md_multitap": 0,
+    "use_subthread": false,
+    "future_option": {
+      "enabled": true,
+      "values": [
+        0,
+        false,
+        1.25,
+        "kept"
+      ]
+    }
+  },
+  "rom_alt": {
+    "regionTagE": "GAME700E"
+  },
+  "future_metadata": {
+    "keep": true
+  }
+}

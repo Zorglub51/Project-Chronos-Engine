@@ -20,7 +20,10 @@ import time
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 MARKER = ".chronos-test.json"
-PATCHES = ("const.nut.m", "mode_demo.nut.m", "mode_title_select.nut.m", "utils.nut.m")
+LIBRARY_V2_MARKER = ".chronos-library-v2"
+PATCHES = ("const.nut.m", "mode_demo.nut.m", "mode_title_select.nut.m", "utils.nut.m",
+           "emulator.nut.m", "systemdata_saveload.nut.m",
+           "pause_main.nut.m", "backup.nut.m")
 KEYS = {"up": (3, 17, -1), "down": (3, 17, 1), "left": (3, 16, -1),
         "right": (3, 16, 1), "z": (1, 306, 1), "x": (1, 305, 1),
         "run": (1, 313, 1), "select": (1, 312, 1)}
@@ -41,6 +44,51 @@ def runtime(path):
     return root
 
 
+def library_v2(path):
+    marker = Path(path) / LIBRARY_V2_MARKER
+    if not marker.exists() and not marker.is_symlink():
+        return False
+    require(marker.is_file() and not marker.is_symlink() and marker.read_bytes() == b"2\n",
+            f"Invalid V2 library marker: {marker}")
+    return True
+
+
+def copy_private_catalogue(source, destination, include_assets):
+    """Copy editable catalogue inputs; never import a state, SRAM or local ROM."""
+    def ignored(directory, names):
+        excluded = set()
+        for name in names:
+            path = Path(directory) / name
+            if path.is_symlink() or name in ("save", "saves", "sram.bin"):
+                excluded.add(name)
+            elif not path.is_dir():
+                metadata = name in ("game.json", "folder.json", "gamelist.json", "assets.json")
+                asset = include_assets and name.lower().endswith(
+                    (".png", ".jpg", ".jpeg", ".webp", ".psb", ".psb.m"))
+                if not metadata and not asset:
+                    excluded.add(name)
+        return excluded
+
+    destination.mkdir()
+    for name in (("jp", "us", "runtime") if include_assets else ("jp", "us")):
+        child = source / name
+        if child.is_dir():
+            require(not child.is_symlink(), f"Catalogue root must not be a link: {child}")
+            shutil.copytree(child, destination / name, ignore=ignored)
+    if include_assets:
+        settings = source / "settings_games.json"
+        if settings.exists():
+            require(settings.is_file() and not settings.is_symlink(), "Games settings must be a regular file")
+            shutil.copy2(settings, destination / settings.name)
+        (destination / LIBRARY_V2_MARKER).write_bytes(b"2\n")
+        (destination / ".current-v2").write_text("jp/_root\n")
+
+
+def current_folder_file(root):
+    info = json.loads((root / MARKER).read_text())
+    return root / ("library/.current-v2" if info.get("filesystem_catalogue") else "published/folders/.current")
+
+
 def prepare(args):
     """Create a new runtime. Never reuse a destination or import real saves."""
     root = Path(args.runtime).absolute()
@@ -48,19 +96,29 @@ def prepare(args):
     binary = Path(args.binary).resolve(strict=True)
     published = Path(args.published).resolve(strict=True)
     support = Path(args.support).resolve(strict=True)
+    source_library = published.parent
+    filesystem_catalogue = library_v2(source_library)
     require(not root.exists() and not root.is_symlink(), f"Destination already exists: {root}")
     for source in (data, binary.parent, published, support):
         require(not root.resolve().is_relative_to(source), "Runtime must be outside input trees")
     digest = hashlib.sha256(binary.read_bytes()).hexdigest()
     require(digest in SUPPORTED_BINARIES, f"Unsupported binary SHA-256: {digest}; hook addresses target retail 1006JP / 1006WW")
     require((data / "system/script/init.nut.m").is_file(), "Expected extracted stock resources, including init.nut.m")
-    require((published / "folders/jp/_root/title_prof.psb.m").is_file(), "Missing published JP root pack")
+    if filesystem_catalogue:
+        require((published / "roms").is_dir() and not (published / "roms").is_symlink(),
+                "Missing regular shared V2 ROM directory")
+        require(not any(path.is_symlink() for path in (published / "roms").iterdir()),
+                "V2 shared ROM files must be regular files, not links")
+        for source in (source_library / "jp", source_library / "us", source_library / "runtime"):
+            require(not root.resolve().is_relative_to(source), "Runtime must be outside catalogue input trees")
+    else:
+        require((published / "folders/jp/_root/title_prof.psb.m").is_file(), "Missing published JP root pack")
     version = (support / "version").read_text().strip()
     require(version in ("1006JP", "1006WW"), f"Unsupported console version: {version}")
     package, motion_prefix = ("040", "jp") if version == "1006JP" else ("041", "us")
     require((data / package / "config/title_prof.psb.m").is_file(), f"Missing console {package} resources")
     packs = []
-    for lineup in ("jp", "us"):
+    for lineup in (() if filesystem_catalogue else ("jp", "us")):
         for pack in sorted((published / "folders" / lineup).glob("*")):
             if not pack.is_dir():
                 continue
@@ -100,24 +158,42 @@ def prepare(args):
         shutil.copy2(patch, game / "system/script" / patch.name)
     # Published Japanese font atlases contain the library's additional kanji.
     # Overlay only this known resource set; keep legacy exports usable.
-    for name in ("makoto_basefont.psb.m", "makoto_basefont_18pt.psb.m",
-                 "makoto_basefont_32pt.psb.m", "NotoSansCJK-OFL.txt"):
+    for name in (() if filesystem_catalogue else ("makoto_basefont.psb.m", "makoto_basefont_18pt.psb.m",
+                                                "makoto_basefont_32pt.psb.m", "NotoSansCJK-OFL.txt")):
         source = published / "system/font" / name
         if source.is_file():
             (game / "system/font").mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, game / "system/font" / name)
     (game / "save").mkdir(exist_ok=True)
+    (root / "nand").mkdir()
+    (root / "published/save").mkdir(parents=True)
     for lineup, pack, names in packs:
         dest = root / "published/folders" / lineup / pack.name
         (dest / "saves").mkdir(parents=True)
         for name in names:
             shutil.copy2(pack / name, dest / name)
-    (root / "published/folders/.current").write_text("jp/_root\n")
+    if not filesystem_catalogue:
+        (root / "published/folders").mkdir(exist_ok=True)
+        (root / "published/folders/.current").write_text("jp/_root\n")
+    # Per-game writes must remain isolated from the user's library. Copy only
+    # editable metadata and create fresh save directories; ROMs remain linked
+    # read-only above. The native save hook sees this private library mount.
+    if filesystem_catalogue or (published / ".per-game-saves-v2").is_file():
+        library = root / "library"
+        copy_private_catalogue(source_library, library, filesystem_catalogue)
+        if filesystem_catalogue:
+            (root / "published/.per-game-saves-v2").write_bytes(b"2\n")
+            (root / "published/roms").mkdir()
+        else:
+            shutil.copy2(published / ".per-game-saves-v2", root / "published/.per-game-saves-v2")
     (root / MARKER).write_text(json.dumps({
         "binary_sha256": digest, "binary_variant": SUPPORTED_BINARIES[digest],
         "data": str(data), "published": str(published), "console_package": package, "fresh_saves": True,
+        "filesystem_catalogue": filesystem_catalogue,
+        "rom_mount_source": str(published / "roms") if filesystem_catalogue else None,
     }, indent=2) + "\n")
-    print(f"Prepared {root} ({len(packs)} packs, fresh test saves)")
+    kind = "filesystem catalogue" if filesystem_catalogue else f"{len(packs)} packs"
+    print(f"Prepared {root} ({kind}, fresh test saves)")
 
 
 def identity(pid):
@@ -195,7 +271,8 @@ def sandbox_command(root, build, duration, silent):
             cmd += ["--ro-bind", str(path), str(path)]
     # Self-contained installs do not expose the shared Mac home at all. This
     # also catches accidental dependencies on it when testing a local launch.
-    if json.loads((root / MARKER).read_text()).get("self_contained"):
+    info = json.loads((root / MARKER).read_text())
+    if info.get("self_contained"):
         cmd += ["--tmpfs", "/media"]
     cmd += ["--dir", "/usr"]
     for path in sorted(Path("/usr").iterdir()):
@@ -203,8 +280,21 @@ def sandbox_command(root, build, duration, silent):
             cmd += ["--ro-bind", str(path), str(path)]
     cmd += ["--bind", str(root), str(root),
             "--bind", str(root / "game"), "/usr/game",
-            "--tmpfs", "/mnt", "--bind", str(root / "published"), "/mnt/usb/library/published",
-            "--bind", str(root / "game/save"), "/rootfs_data",
+            "--tmpfs", "/mnt"]
+    if (root / "library").is_dir():
+        cmd += ["--bind", str(root / "library"), "/mnt/usb/library"]
+    cmd += ["--bind", str(root / "published"), "/mnt/usb/library/published"]
+    if info.get("filesystem_catalogue"):
+        source = root / "game/system/roms" if info.get("self_contained") else Path(info["rom_mount_source"])
+        require(source.is_dir() and not source.is_symlink(), "V2 shared ROM source is unavailable")
+        cmd += ["--ro-bind", str(source), "/mnt/usb/library/published/roms",
+                "--ro-bind", str(source), "/usr/game/system/roms",
+                "--bind", str(root / "published/save"), "/usr/game/save"]
+    # Older private runtimes did not have a distinct NAND directory. A tmpfs
+    # fallback keeps their recovery snapshots separate without host writes.
+    cmd += (["--bind", str(root / "nand"), "/rootfs_data"] if (root / "nand").is_dir()
+            else ["--tmpfs", "/rootfs_data"])
+    cmd += [
             "--tmpfs", "/tmp", "--ro-bind", "/tmp/.X11-unix", "/tmp/.X11-unix",
             "--dev", "/dev", "--dev-bind", "/dev/dri", "/dev/dri",
             "--tmpfs", "/dev/shm", "--dir", "/dev/input",
@@ -231,7 +321,7 @@ def start(args):
         # A console menu restart from a BACK pseudo-title currently crashes in
         # the native engine. Boot at the JP root unless reproducing that bug.
         if not args.resume_pack:
-            (root / "published/folders/.current").write_text("jp/_root\n")
+            current_folder_file(root).write_text("jp/_root\n")
         env = audio_environment(display_environment(), args.silent)
         if args.debug:
             env.update(LIBMALI_DEBUG="1", GL_PROXY_DEBUG="1", M2HOOK_DEBUG="1")
@@ -404,7 +494,7 @@ def main():
     if args.command == "status":
         root = runtime(args.runtime)
         print(json.dumps({"running": bool(active(root)), "runtime": str(root),
-                          "pack": (root / "published/folders/.current").read_text().strip()}, indent=2))
+                          "pack": current_folder_file(root).read_text().strip()}, indent=2))
         return 0
     return globals()[args.command](args) or 0
 

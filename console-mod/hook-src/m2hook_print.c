@@ -122,7 +122,7 @@ static sq_pop_t           p_sq_pop           = (sq_pop_t)          (0x9022c | 1)
 /* sq_getstring: identified at file offset 0x87eb8 by walking forward from
  * sq_getinteger (sntool's pattern at 0x87d24) past sq_getfloat / sq_getbool
  * and matching the OT_STRING type-check (0x08000010 loaded via movs+movt). */
-static sq_getstring_t     p_sq_getstring     = (sq_getstring_t)    (0x87eb8 | 1);
+static sq_getstring_t     p_sq_getstring     = (sq_getstring_t)    (0x8feb8 | 1);
 
 /* Stack-arg helpers — Squirrel pushes function args before invoking.
  * sq_getstring / sq_gettop are also useful but we don't strictly need them
@@ -136,6 +136,19 @@ static sq_getstring_t     p_sq_getstring     = (sq_getstring_t)    (0x87eb8 | 1)
 #include "save_digest.h"
 #include "save_slice.h"
 #include "folder_worker.h"
+#include "save_interpose.h"
+#include "save_owner.h"
+#include "sq_string_arg.h"
+
+#define SAVE_LIBRARY_ROOT "/mnt/usb/library"
+#define SAVE_V2_MARKER SAVE_LIBRARY_ROOT "/published/.per-game-saves-v2"
+#define SAVE_OWNER_MARKER "/usr/game/save/.chronos-sram-owner-v2"
+#define SAVE_RECOVERY_ROOT "/rootfs_data/.chronos-sram-recovery"
+/* Mode is selected once per engine process. Hot-plug starts a new process;
+ * catalogue polls never need a marker open on the render thread. */
+static int g_catalog_boot_mode = -2;
+static struct save_owner g_save_owner;
+static int g_save_supported;
 
 #define EXECUTE_PREFIX "execute="
 #define EXECUTE_PREFIX_LEN 8
@@ -626,6 +639,11 @@ static int sram_splice_in(const char *path)
  * Returns 0 on success. */
 static int do_folder_swap(const char *lineup, const char *dir)
 {
+    if (g_catalog_boot_mode != 0) {
+        errno = ENOTSUP;
+        fprintf(stderr, "[m2hook] Published-folder swap refused in filesystem catalogue mode\n");
+        return -1;
+    }
     if (!valid_lineup(lineup) || !valid_dir_name(dir)) {
         fprintf(stderr, "[m2hook] folder swap: invalid '%s/%s'\n",
                 lineup ? lineup : "(null)", dir ? dir : "(null)");
@@ -659,17 +677,17 @@ static int do_folder_swap(const char *lineup, const char *dir)
     char incoming_saves[280];
     snprintf(incoming_saves, sizeof(incoming_saves), "%s/%s/%s/saves",
              FOLDERS_ROOT, lineup, dir);
-    mkdir(incoming_saves, 0755);
+    if (!g_save_routes.enabled) mkdir(incoming_saves, 0755);
 
     char old_lineup[8] = {0}, old_dir[64] = {0};
     int have_outgoing = 0;
     char outgoing_saves[280] = {0};
     if (parse_current(old_lineup, sizeof(old_lineup), old_dir, sizeof(old_dir)) == 0
         && valid_lineup(old_lineup) && valid_dir_name(old_dir)) {
-        have_outgoing = 1;
+        have_outgoing = !g_save_routes.enabled;
         snprintf(outgoing_saves, sizeof(outgoing_saves), "%s/%s/%s/saves",
                  FOLDERS_ROOT, old_lineup, old_dir);
-        mkdir(outgoing_saves, 0755);
+        if (have_outgoing) mkdir(outgoing_saves, 0755);
     }
 
     /* Phase 1 (swap-out): migrate any NEW state files (slots created by
@@ -721,11 +739,11 @@ static int do_folder_swap(const char *lineup, const char *dir)
      * the live save dir, then splice the incoming pack's SRAM slice into
      * data_008. */
     trace_event("swap phase=incoming-saves path=%s", incoming_saves);
-    if (bind_state_files(incoming_saves, LIVE_SAVE_DIR) != 0) {
+    if (!g_save_routes.enabled && bind_state_files(incoming_saves, LIVE_SAVE_DIR) != 0) {
         fprintf(stderr, "[m2hook] folder swap: state file bind failed\n");
         return -1;
     }
-    {
+    if (!g_save_routes.enabled) {
         char incoming_sram[280];
         snprintf(incoming_sram, sizeof(incoming_sram), "%s/sram.bin", incoming_saves);
         if (sram_splice_in(incoming_sram) != 0) {
@@ -927,7 +945,7 @@ static volatile int g_hook_call_count = 0;
  * sq_getstring's error-raising path (which longjmp's on type mismatch and
  * kills the script at top-level). Returns NULL on type mismatch.
  *
- * Layout derived from sq_getstring disassembly at 0x87eb8:
+ * Layout derived from sq_getstring at file offset0x87eb8 (mapped0x8feb8):
  *   vm[0x18/4]                  → _stack._vals (SQObjectPtr* array)
  *   vm[0x34/4]                  → _stackbase (SQInteger)
  *   stack_obj = vals[stackbase + idx - 1]      (each SQObjectPtr is 8 bytes)
@@ -943,15 +961,148 @@ static const SQChar *vm_get_string(HSQUIRRELVM v, SQInteger idx)
     uintptr_t *vals = (uintptr_t *)vm[0x18 / 4];
     if (!vals) return NULL;
     SQInteger stackbase = (SQInteger)vm[0x34 / 4];
-    SQInteger slot = stackbase + idx - 1;
-    if (slot < 0) return NULL;
+    SQInteger top = (SQInteger)vm[0x30 / 4], slot;
+    if (!chronos_sq_argument_slot(stackbase, top, idx, &slot)) return NULL;
     /* Each SQObjectPtr is 8 bytes; vals is the base of the SQObjectPtr array. */
     uintptr_t *obj = (uintptr_t *)((uint8_t *)vals + slot * 8);
     uintptr_t obj_type = obj[0];
     uintptr_t obj_val = obj[1];
-    if (obj_type != 0x08000010 /* OT_STRING */) return NULL;
+    if (obj_type != 0x08000010 /* OT_STRING */ || !obj_val) return NULL;
     return (const SQChar *)(obj_val + 0x1c);
 }
+
+static SQInteger save_native_result(HSQUIRRELVM v, int result, int error)
+{
+    char status[96];
+    if (!result) p_sq_pushstring(v, "ok", -1);
+    else if (error == EPROTO) {
+        p_sq_pushstring(v, "error:unsupported SRAM schema; migrate the library in the editor", -1);
+    } else if (error == EAGAIN) {
+        p_sq_pushstring(v, "error:native save digest is not ready; preserve the current game", -1);
+    } else {
+        snprintf(status, sizeof(status), "error:%d:%s", error, strerror(error));
+        p_sq_pushstring(v, status, -1);
+    }
+    return 1;
+}
+
+static SQInteger native_save_reset_bindings(HSQUIRRELVM v)
+{
+    const char *mode = vm_get_string(v, 2);
+    int result = -1, error = EINVAL;
+    if (!g_save_supported) return save_native_result(v, -1, ENOTSUP);
+    pthread_mutex_lock(&g_save_mutex);
+    ++g_save_bypass;
+    if (mode && !strcmp(mode, "v2")) {
+        memset(g_save_routes.bindings, 0, sizeof(g_save_routes.bindings));
+        __atomic_store_n(&g_save_routes.enabled, 1, __ATOMIC_RELEASE);
+        result = 0;
+    } else if (mode && !strcmp(mode, "legacy")) {
+        result = 0;
+        if (g_save_routes.enabled && g_save_owner.known) {
+            if (save_owner_flush(&g_save_owner, &g_save_routes, LIVE_DATA_008, LIVE_META_008, SAVE_OWNER_MARKER, SAVE_RECOVERY_ROOT) < 0 ||
+                save_owner_marker(&g_save_owner, SAVE_OWNER_MARKER, "pending")) result = -1;
+            if (!result) g_save_owner.known = 0;
+        }
+        if (!result) {
+            memset(g_save_routes.bindings, 0, sizeof(g_save_routes.bindings));
+            __atomic_store_n(&g_save_routes.enabled, 0, __ATOMIC_RELEASE);
+        }
+    } else errno = EINVAL;
+    if (result) error = errno ? errno : EINVAL;
+    --g_save_bypass;
+    pthread_mutex_unlock(&g_save_mutex);
+    trace_event("save registry reset mode=%s result=%d", mode ? mode : "(null)", result);
+    return save_native_result(v, result, error);
+}
+
+static SQInteger native_save_bind(HSQUIRRELVM v)
+{
+    const char *index = vm_get_string(v, 2), *id = vm_get_string(v, 3);
+    const char *directory = vm_get_string(v, 4), *tag = vm_get_string(v, 5);
+    const char *segment = vm_get_string(v, 6);
+    if (!g_save_supported) return save_native_result(v, -1, ENOTSUP);
+    unsigned at;
+    if (save_route_decimal(index, SAVE_ROUTE_CAPACITY - 1, &at)) return save_native_result(v, -1, errno);
+    pthread_mutex_lock(&g_save_mutex);
+    ++g_save_bypass;
+    struct save_binding previous = g_save_routes.bindings[at];
+    int result = save_route_bind(&g_save_routes, index, id, directory, tag, segment);
+    if (!result) {
+        int saves = save_files_game_directory(g_save_routes.library, directory, 1);
+        if (saves < 0) result = -1;
+        else {
+            result = save_files_identity(saves, id, 1);
+            int error = errno; close(saves); errno = error;
+        }
+        if (result) g_save_routes.bindings[at] = previous;
+    }
+    int error = errno;
+    --g_save_bypass;
+    pthread_mutex_unlock(&g_save_mutex);
+    trace_event("save bind index=%s id=%s directory=%s segment=%s result=%d", index ? index : "?",
+                id ? id : "?", directory ? directory : "?", segment ? segment : "?", result);
+    return save_native_result(v, result, error);
+}
+
+static SQInteger native_save_activate(HSQUIRRELVM v)
+{
+    const char *id = vm_get_string(v, 2);
+    if (!g_save_supported) return save_native_result(v, -1, ENOTSUP);
+    pthread_mutex_lock(&g_save_mutex);
+    ++g_save_bypass;
+    int result = save_owner_activate(&g_save_owner, &g_save_routes, id,
+                                    LIVE_DATA_008, LIVE_META_008, SAVE_OWNER_MARKER, SAVE_RECOVERY_ROOT);
+    int error = errno;
+    --g_save_bypass;
+    pthread_mutex_unlock(&g_save_mutex);
+    trace_event("save activate id=%s result=%d error=%d", id ? id : "?", result, result ? error : 0);
+    return save_native_result(v, result, error);
+}
+
+static SQInteger native_save_flush(HSQUIRRELVM v)
+{
+    if (!g_save_supported) return save_native_result(v, -1, ENOTSUP);
+    pthread_mutex_lock(&g_save_mutex);
+    ++g_save_bypass;
+    int result = g_save_routes.enabled ? save_owner_flush(&g_save_owner, &g_save_routes,
+                         LIVE_DATA_008, LIVE_META_008, SAVE_OWNER_MARKER, SAVE_RECOVERY_ROOT) : 0;
+    int error = errno;
+    --g_save_bypass;
+    pthread_mutex_unlock(&g_save_mutex);
+    trace_event("save flush id=%s result=%d recovery=%d", g_save_owner.game_id, result, result == 1);
+    return save_native_result(v, result < 0 ? -1 : 0, error);
+}
+
+static SQInteger native_save_locks(HSQUIRRELVM v, int set)
+{
+    const char *id = vm_get_string(v, 2), *value = set ? vm_get_string(v, 3) : NULL;
+    if (!g_save_supported) return save_native_result(v, -1, ENOTSUP);
+    unsigned mask = 0;
+    if (set && save_route_decimal(value, 15, &mask)) return save_native_result(v, -1, errno);
+    pthread_mutex_lock(&g_save_mutex);
+    ++g_save_bypass;
+    int result = -1;
+    const struct save_binding *binding = save_route_find(&g_save_routes, id);
+    if (!g_save_routes.enabled || !binding) errno = ENOENT;
+    else {
+        int saves = save_files_game_directory(g_save_routes.library, binding->directory, 0);
+        if (saves >= 0) {
+            if (!save_files_identity(saves, id, 0))
+                result = set ? save_files_set_locks(saves, mask) : save_files_get_locks(saves, &mask);
+            int error = errno; close(saves); errno = error;
+        }
+    }
+    int error = errno;
+    --g_save_bypass;
+    pthread_mutex_unlock(&g_save_mutex);
+    if (set || result < 0) return save_native_result(v, result, error);
+    if (result == 1) p_sq_pushstring(v, "missing", -1);
+    else { char status[4]; snprintf(status, sizeof(status), "%u", mask); p_sq_pushstring(v, status, -1); }
+    return 1;
+}
+static SQInteger native_save_get_locks(HSQUIRRELVM v) { return native_save_locks(v, 0); }
+static SQInteger native_save_set_locks(HSQUIRRELVM v) { return native_save_locks(v, 1); }
 
 /* Split a script-side regionTag of the form "FOLDER_<lineup>_<dir>"
  * (e.g. "FOLDER_jp_FOLDER_SGX") into separate (lineup, dir) outputs.
@@ -1000,6 +1151,8 @@ static SQInteger native_exit_game_folder(HSQUIRRELVM v)
     return 0;
 }
 
+#include "catalog_runtime.h"
+
 static struct folder_worker g_folder_worker = FOLDER_WORKER_INIT;
 
 static SQInteger native_begin_folder_swap(HSQUIRRELVM v)
@@ -1046,6 +1199,26 @@ static void register_folder_natives(HSQUIRRELVM v)
     p_sq_pushstring(v, "beginGameFolderSwap", -1);
     p_sq_newclosure(v, native_begin_folder_swap, 0);
     p_sq_newslot(v, -3, 0);
+
+    const struct { const char *name; SQFUNCTION function; } save_functions[] = {
+        {"chronosSaveResetBindings", native_save_reset_bindings},
+        {"chronosSaveBind", native_save_bind},
+        {"chronosSaveActivate", native_save_activate},
+        {"chronosSaveFlush", native_save_flush},
+        {"chronosSaveGetLocks", native_save_get_locks},
+        {"chronosSaveSetLocks", native_save_set_locks},
+        {"chronosLibraryEnabled", native_catalog_enabled},
+        {"chronosCurrentFolder", native_catalog_current},
+        {"beginReadFolder", native_catalog_begin},
+        {"pollReadFolder", native_catalog_poll},
+        {"takeFolder", native_catalog_take},
+        {"chronosRememberFolder", native_catalog_remember},
+    };
+    for (unsigned i = 0; i < sizeof(save_functions) / sizeof(save_functions[0]); ++i) {
+        p_sq_pushstring(v, save_functions[i].name, -1);
+        p_sq_newclosure(v, save_functions[i].function, 0);
+        p_sq_newslot(v, -3, 0);
+    }
     p_sq_pushstring(v, "pollGameFolderSwap", -1);
     p_sq_newclosure(v, native_poll_folder_swap, 0);
     p_sq_newslot(v, -3, 0);
@@ -1088,7 +1261,7 @@ void __attribute__((used)) hook_sq_pushstring_handler(HSQUIRRELVM v, const SQCha
 #if ENABLE_FOLDER_HOOK
         /* Once print is hooked and v is valid, register the folder natives
          * (one-shot — guarded by g_natives_registered). */
-        if (g_print_hooked && !g_natives_registered) {
+        if (g_print_hooked && !g_natives_registered && g_save_supported) {
             register_folder_natives(v);
         }
 #endif
@@ -1205,6 +1378,19 @@ static void install_hook(uint8_t *data, size_t size)
         return;
     }
 
+#if ENABLE_FOLDER_HOOK
+    /* The exported Squirrel closure API addresses are verified for this exact
+     * stock code layout. Do not invoke them in a different executable. */
+    g_save_supported = (uintptr_t)addr == ((uintptr_t)p_sq_pushstring & ~(uintptr_t)1);
+    if (!g_save_supported) {
+        fprintf(stderr, "[m2hook] Unsupported Squirrel API layout; native hooks disabled\n");
+        return;
+    }
+    g_catalog_supported = catalog_verify_api();
+    if (!g_catalog_supported)
+        fprintf(stderr, "[m2hook] Catalogue API signatures differ; V2 catalogue disabled\n");
+#endif
+
     DBG("[m2hook] Found sq_pushstring at %p\n", addr);
 
     g_sq_pushstring_addr = (uintptr_t)addr;
@@ -1309,6 +1495,45 @@ static void m2hook_init(void)
     }
 
 #if ENABLE_FOLDER_HOOK
+    save_interpose_ready();
+    g_catalog_boot_mode = catalog_enabled(SAVE_LIBRARY_ROOT);
+    snprintf(g_save_routes.library, sizeof(g_save_routes.library), "%s", SAVE_LIBRARY_ROOT);
+    /* glibc's fortified realpath requires PATH_MAX storage when a caller
+     * supplies a buffer, regardless of the actual resolved path length. */
+    char *alias = realpath(LIVE_SAVE_DIR, NULL);
+    if (alias) {
+        save_route_normalize(alias, NULL, g_save_routes.live_alias, sizeof(g_save_routes.live_alias));
+        free(alias);
+    }
+    const char *save_mode = getenv("M2HOOK_SAVE_MODE");
+    /* A present but invalid V2 marker stays closed: never fall back to
+     * positional saves or bind a stale published folder over current data. */
+    int save_v2 = g_catalog_boot_mode != 0 || (save_mode && !strcmp(save_mode, "v2"));
+    if (!save_mode && !save_v2) {
+        int marker = open(SAVE_V2_MARKER, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+        if (marker >= 0) {
+            char bytes[3];
+            save_v2 = read(marker, bytes, sizeof(bytes)) == 2 && bytes[0] == '2' && bytes[1] == '\n';
+            close(marker);
+        }
+    }
+    __atomic_store_n(&g_save_routes.enabled, save_v2, __ATOMIC_RELEASE);
+    ++g_save_bypass;
+    if (save_owner_load(&g_save_owner, SAVE_OWNER_MARKER))
+        fprintf(stderr, "[m2hook] Invalid SRAM owner marker; live SRAM will not be attributed to a game\n");
+    if (!save_v2 && g_save_owner.known) {
+        /* A legacy process must not leave a stale ready-V2 ownership claim. */
+        if (save_owner_flush(&g_save_owner, &g_save_routes, LIVE_DATA_008, LIVE_META_008, SAVE_OWNER_MARKER, SAVE_RECOVERY_ROOT) < 0 ||
+            save_owner_marker(&g_save_owner, SAVE_OWNER_MARKER, "pending")) {
+            --g_save_bypass;
+            fprintf(stderr, "[m2hook] Cannot preserve V2 SRAM before legacy mode; folder setup stopped\n");
+            return;
+        }
+        g_save_owner.known = 0;
+    }
+    --g_save_bypass;
+    trace_event("save mode=%s owner=%s", save_v2 ? "v2" : "legacy",
+                g_save_owner.known ? g_save_owner.game_id : "none");
     g_console_layout = console_layout_detect("/usr/game");
     if (!g_console_layout) {
         fprintf(stderr, "[m2hook] Unsupported or incomplete console resources; folder hook disabled\n");
@@ -1321,7 +1546,7 @@ static void m2hook_init(void)
      * pack exists on disk, bind its three PSBs (title_mode_top, title_prof,
      * title_jp_titleselect_<lineup>) over the live paths. State files are
      * bound lazily on first do_folder_swap. */
-    {
+    if (g_catalog_boot_mode == 0) {
         char init_lineup[8], init_dir[64];
         if (parse_current(init_lineup, sizeof(init_lineup), init_dir, sizeof(init_dir)) == 0
             && valid_lineup(init_lineup) && valid_dir_name(init_dir)) {
@@ -1340,7 +1565,9 @@ static void m2hook_init(void)
                      FOLDERS_ROOT, init_lineup, init_dir, motion_basename);
             snprintf(dst, sizeof(dst), "%s/motion/%s", LIVE_DIR, motion_basename);
             failures += bind_mount_file(src, dst) != 0;
-            /* Bind active pack's state save files + splice SRAM. */
+            /* Legacy pack save bindings only. V2 routes native filenames to
+             * individual games and preserves the current common-SRAM owner. */
+            if (!g_save_routes.enabled) {
             char init_saves[280];
             snprintf(init_saves, sizeof(init_saves), "%s/%s/%s/saves",
                      FOLDERS_ROOT, init_lineup, init_dir);
@@ -1357,12 +1584,16 @@ static void m2hook_init(void)
                 failures += restored != 0;
                 if (!restored) failures += write_pack_marker(LIVE_SRAM_PACK, target) != 0;
             }
+            }
             fprintf(stderr, "[m2hook] init: active pack %s/%s, setup failures=%d\n",
                     init_lineup, init_dir, failures);
         } else {
             fprintf(stderr, "[m2hook] init: invalid pack %s/%s; startup binds skipped\n",
                     init_lineup, init_dir);
         }
+    }
+    else {
+        fprintf(stderr, "[m2hook] init: filesystem catalogue mode=%d; published-pack binds skipped\n", g_catalog_boot_mode);
     }
     trace_mounts("after startup binds");
 #endif

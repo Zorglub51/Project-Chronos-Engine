@@ -14,6 +14,26 @@ let gamesSettings = { genres: [], alpha_exclusions: [] };
 let genreNames = ['\u2014']; // index 0 = unset, rest populated from settings
 let workspaceView = 'home';
 let partitionManager = null;
+let expertEditor = null;
+
+async function setupExpertEditor() {
+    const container = document.getElementById('expert-fields');
+    try {
+        const response = await fetch('game-parameters.json');
+        if (!response.ok) throw new Error('Parameter descriptions could not be loaded.');
+        const catalog = await response.json();
+        window.ChronosExpert.decorateDetails(catalog);
+        expertEditor = window.ChronosExpert.create(container, catalog, (path) => {
+            autoSave();
+            const entry = getLibrary()?.games[selectedIndex];
+            if (entry && path === 'rom.country') updateTags(entry);
+        });
+        const entry = getLibrary()?.games[selectedIndex];
+        if (entry && !entry.is_folder) expertEditor.render(entry.game);
+    } catch (error) {
+        container.textContent = error.message;
+    }
+}
 
 // Current lineup helper
 function getLibrary() {
@@ -125,7 +145,7 @@ async function loadSettings() {
                 const recent = document.getElementById('btn-recent-library');
                 recent.style.display = '';
                 recent.title = root;
-                recent.onclick = async () => { await loadLibrary(root); await rememberLibrary(root); };
+                recent.onclick = async () => { if (await loadLibrary(root) !== false) await rememberLibrary(root); };
                 document.getElementById('recent-library-path').textContent = root;
             }
         }
@@ -243,9 +263,13 @@ async function saveEditorSettingsToBackend() {
 async function saveGamesSettingsToBackend() {
     if (!editorSettings.games_path) return;
     try {
+        setSaveStatus('Saving settings…');
         await invoke('save_games_settings', { gamesPath: editorSettings.games_path, settings: gamesSettings });
+        setSaveStatus('Changes saved');
     } catch (e) {
+        setSaveStatus('Update failed: ' + e, true);
         console.error('Failed to save games settings:', e);
+        await modalAlert('Settings could not be fully updated: ' + e);
     }
 }
 
@@ -756,11 +780,7 @@ document.addEventListener('DOMContentLoaded', () => {
         el.addEventListener('click', () => el.parentElement.classList.toggle('open'));
     });
 
-    // Preamp slider sync
-    const slider = document.getElementById('f-preamp-slider');
-    const num = document.getElementById('f-preamp');
-    slider.addEventListener('input', () => { num.value = slider.value; onFieldChange(num); });
-    num.addEventListener('input', () => { slider.value = num.value; });
+    setupExpertEditor();
 
     // Bind all form fields
     document.querySelectorAll('[data-path]').forEach(el => {
@@ -802,27 +822,20 @@ async function openFolder() {
                 return;
             }
             const ok = await modalConfirm(
-                'No library found. Create an empty library here from the BACKUP/game/ templates?'
+                'No library found. Create an empty library here from the original console backup?'
             );
             if (!ok) return;
             try {
-                const initRes = await invoke('init_library', { usbRoot: folder });
+                const initRes = await runOperation('Create empty library', onProgress =>
+                    invoke('init_library', { usbRoot: folder, onProgress }));
                 console.log('[init_library]', initRes);
-                // Run one publish so published/ is populated with empty packs
-                // ready for the console mount.
-                const pubRes = await invoke('publish_library', {
-                    gamesPath: initRes.library_root,
-                    stockDataRoot: '',
-                    outputRoot: '',
-                });
-                console.log('[publish_library]', pubRes);
             } catch (e) {
                 modalAlert('Library initialization failed: ' + e);
                 return;
             }
         }
 
-        await loadLibrary(folder);
+        if (await loadLibrary(folder) === false) return;
         // Persist selected path
         onSettingChange('games_path', folder);
         updateGamesPathDisplay(folder);
@@ -834,21 +847,20 @@ async function openFolder() {
 async function loadLibrary(path) {
     try {
         // USB-style sync: backend resolves the library/published pair from
-        // `path` automatically (wrapper layout: <picked>/library + <picked>/published;
-        // legacy: <picked> itself as library + sibling published). Safe no-op
+        // `path` automatically (wrapper: <picked>/library/published;
+        // direct library: <picked>/published). Safe no-op
         // when published/ doesn't exist or is empty.
-        try {
-            const r = await invoke('sync_library', {
-                libraryRoot: path,
-                publishedRoot: '',
-            });
-            console.log('[sync_library]', r);
-        } catch (e) {
-            console.warn('sync_library failed (continuing):', e);
-        }
-
-        dualLibrary = await runOperation('Open library — check ROM storage', onProgress =>
-            invoke('load_library', { gamesPath: path, onProgress }));
+        let saveReport;
+        const loaded = await runOperation('Open library — check save data and ROM storage', async onProgress => {
+            try {
+                saveReport = await invoke('sync_library', { libraryRoot: path, publishedRoot: '' });
+            } catch (e) {
+                throw new Error('Save data could not be migrated safely. Original save archives are retained.\n\n' + e);
+            }
+            return invoke('load_library', { gamesPath: path, onProgress });
+        });
+        dualLibrary = loaded;
+        document.getElementById('btn-publish').style.display = loaded.source_schema === 1 ? '' : 'none';
         await loadGamesSettings(path);
         workspaceView = 'library';
         document.getElementById('console-panel').style.display = 'none';
@@ -876,8 +888,17 @@ async function loadLibrary(path) {
                 selectGame(0);
             }
         }
+        const states = saveReport?.state_files_unmapped || 0;
+        const sram = saveReport?.sram_blocks_unmapped || 0;
+        if (states || sram) {
+            await modalAlert('Some save data could not be safely imported and was left unchanged.\n\n' +
+                `Save state files: ${states}\nIn-game memory (SRAM) blocks: ${sram}\n\n` +
+                'Original archives are retained in ' + dualLibrary.path + '/published. Check the original catalogue and save metadata before removing those files.');
+        }
+        return true;
     } catch (e) {
-        modalAlert('Error loading library: ' + e);
+        await modalAlert('Error loading library: ' + e);
+        return false;
     }
 }
 
@@ -892,6 +913,30 @@ function updateStats() {
         document.getElementById('library-stats').textContent =
             `${jpCount} JP + ${usCount} US games`;
     }
+    updateMenuLimitWarning();
+}
+
+function updateMenuLimitWarning() {
+    const warning = document.getElementById('menu-limit-warning');
+    if (!warning) return;
+    const messages = [];
+    if (currentFolder) {
+        const count = getLibrary().games.length;
+        if (count > 49) messages.push(`This folder has ${count} games. The console supports 49 games plus Back. Move some games to another folder.`);
+    } else if (dualLibrary) {
+        for (const lineup of ['jp', 'us']) {
+            const entries = dualLibrary[lineup]?.games || [];
+            if (entries.length > 50) messages.push(`${lineup.toUpperCase()} has ${entries.length} menu entries. The console supports 50. Move some games into folders.`);
+            for (const entry of entries) {
+                if (entry.is_folder && entry.game_count > 49) {
+                    const name = entry.game?.display?.name_eng || entry.game?.display?.name || 'Folder';
+                    messages.push(`${name} (${lineup.toUpperCase()}) has ${entry.game_count} games. A folder supports 49 games plus Back.`);
+                }
+            }
+        }
+    }
+    warning.textContent = messages.join('\n');
+    warning.hidden = messages.length === 0;
 }
 
 // ---- Render game list ----
@@ -1198,8 +1243,7 @@ function selectGame(index) {
     setField('f-genre', entry.game.genre || 0);
 
     setField('f-rom', entry.game.rom.rom);
-    setField('f-preamp', entry.game.rom.preamp);
-    document.getElementById('f-preamp-slider').value = entry.game.rom.preamp;
+    if (expertEditor) expertEditor.render(entry.game);
 
 
 
@@ -1276,6 +1320,7 @@ function onFieldChange(el) {
     // Auto-set arch from platform (csize)
     if (path === 'display.csize') {
         syncArchFromPlatform(entry);
+        if (expertEditor) expertEditor.render(entry.game);
         updateTags(entry);
     }
     if (['display.name', 'display.name_eng', 'display.titlebar'].includes(path)) queueTitlePreview();
@@ -1292,8 +1337,8 @@ function syncArchFromPlatform(entry) {
     if (csize === 3) entry.game.rom.tg16cd_systemcard = 'super';
     else if (csize === 4) entry.game.rom.tg16cd_systemcard = 'arcade';
     else entry.game.rom.tg16cd_systemcard = null;
-    // Country always matches lineup
-    entry.game.rom.country = currentLineup;
+    // Preserve the hardware region chosen in Expert when changing platform.
+    if (!entry.game.rom.country) entry.game.rom.country = currentLineup;
 }
 
 function updateTags(entry) {
@@ -1539,7 +1584,9 @@ async function handleFolderCoverDrop(filePath) {
 }
 
 async function importCover(srcPath) {
+    if (operationBusy) return;
     const library = getLibrary();
+    if (!library || selectedIndex < 0) return;
     const entry = library.games[selectedIndex];
     const coverName = entry.game.cover || 'cover.png';
     const folderPrefix = currentFolder ? currentFolder.name + '/' : '';
@@ -1551,33 +1598,38 @@ async function importCover(srcPath) {
     const h = dims.height;
 
     try {
-        await invoke('import_cover', { srcPath, destDir, filename: coverName, width: w, height: h });
-        // Reload cover
-        const cacheKey = currentLineup + '/' + folderPrefix + entry.folder;
-        delete coverCache[cacheKey];
-        const lineup = currentFolder
-            ? currentLineup + '/' + currentFolder.name
-            : currentLineup;
-        const data = await invoke('get_cover', {
-            gamesPath: dualLibrary.path,
-            lineup: lineup,
-            folder: entry.folder,
-            filename: coverName
+        await runOperation('Import cover image', async () => {
+            if (saveTimeout) clearTimeout(saveTimeout);
+            saveTimeout = null;
+            await saveNow();
+            await invoke('import_cover', { srcPath, destDir, filename: coverName, width: w, height: h });
+            // Reload cover
+            const cacheKey = currentLineup + '/' + folderPrefix + entry.folder;
+            delete coverCache[cacheKey];
+            const lineup = currentFolder
+                ? currentLineup + '/' + currentFolder.name
+                : currentLineup;
+            const data = await invoke('get_cover', {
+                gamesPath: dualLibrary.path,
+                lineup: lineup,
+                folder: entry.folder,
+                filename: coverName
+            });
+            coverCache[cacheKey] = data;
+            document.getElementById('editor-cover').src = data;
+            document.getElementById('cover-preview').src = data;
+            // Update ccolor thumbnails
+            for (let i = 0; i <= 2; i++) {
+                const thumb = document.getElementById('ccolor-thumb-' + i);
+                if (thumb) thumb.src = data;
+            }
+            // Update list thumbnail
+            const listImg = document.querySelectorAll('.game-item')[selectedIndex]?.querySelector('img');
+            if (listImg) listImg.src = data;
+            entry.has_cover = true;
         });
-        coverCache[cacheKey] = data;
-        document.getElementById('editor-cover').src = data;
-        document.getElementById('cover-preview').src = data;
-        // Update ccolor thumbnails
-        for (let i = 0; i <= 2; i++) {
-            const thumb = document.getElementById('ccolor-thumb-' + i);
-            if (thumb) thumb.src = data;
-        }
-        // Update list thumbnail
-        const listImg = document.querySelectorAll('.game-item')[selectedIndex]?.querySelector('img');
-        if (listImg) listImg.src = data;
-        entry.has_cover = true;
     } catch (e) {
-        modalAlert('Error importing cover: ' + e);
+        await modalAlert('Error importing cover: ' + e);
     }
 }
 
@@ -1657,30 +1709,33 @@ function openNewLibrary() {
 }
 
 async function createNewLibrary() {
+    if (operationBusy) return;
     const error = document.getElementById('new-error');
     error.textContent = '';
     const sourcePath = document.getElementById('new-source').value;
-    const parent = document.getElementById('new-parent').value;
-    const name = document.getElementById('new-name').value.trim();
-    if (!sourcePath || !parent || !name || name === '.' || name === '..' || /[\\/:\x00-\x1f]/.test(name)) {
-        error.textContent = 'Choose a backup, a destination parent, and a new folder name without slashes.';
+    const destination = document.getElementById('new-destination').value;
+    if (!sourcePath || !destination) {
+        error.textContent = 'Choose a backup and a destination USB drive or folder.';
         return;
     }
-    const destination = parent.replace(/[\\/]$/, '') + '/' + name;
     const includeGames = document.getElementById('new-contents').value === 'stock';
     const wizard = document.getElementById('new-library-overlay');
     document.getElementById('btn-new-create').disabled = true;
     try {
+        if (saveTimeout) clearTimeout(saveTimeout);
+        saveTimeout = null;
         if (dualLibrary) await saveNow();
         wizard.classList.remove('visible');
         const result = await runOperation('Create library', onProgress => invoke('create_library_from_dump', {
             sourcePath, destination, includeGames, onProgress,
         }));
         document.getElementById('settings-panel').style.display = 'none';
-        await loadLibrary(result.root);
+        if (await loadLibrary(result.root) === false) return;
         try { await rememberLibrary(result.root, result.bios); }
         catch (e) { await modalAlert('Library created at ' + result.root + ', but settings could not be saved: ' + e); }
-        const message = result.games ? result.games + ' original games imported and published.' : 'Empty library created. Add your games, then Publish to prepare it for the console.';
+        const message = result.source_schema === 2
+            ? (result.games ? result.games + ' original games imported. Changes are saved directly for the console.' : 'Empty library ready for the console. Add your games; changes are saved automatically.')
+            : (result.games ? result.games + ' original games imported and published.' : 'Empty library created. Add your games, then Publish to prepare it for the console.');
         await modalAlert(message + '\n\n' + result.root + (result.warnings.length ? '\n\n' + result.warnings.join('\n') : ''));
     } catch (e) {
         wizard.classList.add('visible');
@@ -1694,11 +1749,11 @@ function setupImportUI() {
     document.getElementById('btn-new-cancel').addEventListener('click', () => document.getElementById('new-library-overlay').classList.remove('visible'));
     document.getElementById('btn-new-create').addEventListener('click', createNewLibrary);
     document.getElementById('new-source-type').addEventListener('change', () => { document.getElementById('new-source').value = ''; });
-    for (const [id, input, type] of [['btn-new-source', 'new-source', 'source'], ['btn-new-parent', 'new-parent', 'parent']]) {
+    for (const [id, input, type] of [['btn-new-source', 'new-source', 'source'], ['btn-new-destination', 'new-destination', 'destination']]) {
         document.getElementById(id).addEventListener('click', async () => {
             try {
-                const directory = type === 'parent' || document.getElementById('new-source-type').value !== 'image';
-                const path = await dialogOpen({ directory, title: type === 'parent' ? 'Where to create the library' : 'Select original console backup' });
+                const directory = type === 'destination' || document.getElementById('new-source-type').value !== 'image';
+                const path = await dialogOpen({ directory, title: type === 'destination' ? 'Select destination USB drive or folder' : 'Select original console backup' });
                 if (path) document.getElementById(input).value = path;
             } catch (e) { document.getElementById('new-error').textContent = String(e); }
         });
@@ -1833,22 +1888,28 @@ async function populateRomDatalist(entry) {
 
 // ---- Folder cover import ----
 async function importFolderCover(folderName, srcPath) {
+    if (operationBusy) return null;
     const destDir = dualLibrary.path + '/' + currentLineup + '/' + folderName;
     try {
-        await invoke('import_cover', { srcPath, destDir, filename: 'cover.png', width: 240, height: 240 });
-        // Clear and reload cache
-        const cacheKey = currentLineup + '/' + folderName;
-        delete coverCache[cacheKey];
-        const data = await invoke('get_cover', {
-            gamesPath: dualLibrary.path,
-            lineup: currentLineup,
-            folder: folderName,
-            filename: 'cover.png'
+        return await runOperation('Import folder cover image', async () => {
+            if (saveTimeout) clearTimeout(saveTimeout);
+            saveTimeout = null;
+            await saveNow();
+            await invoke('import_cover', { srcPath, destDir, filename: 'cover.png', width: 240, height: 240 });
+            // Clear and reload cache
+            const cacheKey = currentLineup + '/' + folderName;
+            delete coverCache[cacheKey];
+            const data = await invoke('get_cover', {
+                gamesPath: dualLibrary.path,
+                lineup: currentLineup,
+                folder: folderName,
+                filename: 'cover.png'
+            });
+            coverCache[cacheKey] = data;
+            return data;
         });
-        coverCache[cacheKey] = data;
-        return data;
     } catch (e) {
-        modalAlert('Error setting folder cover: ' + e);
+        await modalAlert('Error setting folder cover: ' + e);
         return null;
     }
 }
@@ -2005,36 +2066,41 @@ function closeMosaicPicker() {
 }
 
 async function buildMosaicCover() {
+    if (operationBusy) return;
     if (!mosaicFolderEntry || mosaicSelection.length !== 4) return;
+    const folderName = mosaicFolderEntry.folder;
+    const gameDirNames = [...mosaicSelection];
     const folderDir = dualLibrary.path + '/' + currentLineup + '/' + mosaicFolderEntry.folder;
     try {
-        await invoke('generate_folder_mosaic_cover', {
-            folderDir,
-            gameDirNames: [...mosaicSelection],
+        await runOperation('Create folder cover image', async () => {
+            if (saveTimeout) clearTimeout(saveTimeout);
+            saveTimeout = null;
+            await saveNow();
+            await invoke('generate_folder_mosaic_cover', {
+                folderDir,
+                gameDirNames,
+            });
+            // Refresh cover in editor + list. Bust cache.
+            const cacheKey = currentLineup + '/' + folderName;
+            delete coverCache[cacheKey];
+            const data = await invoke('get_cover', {
+                gamesPath: dualLibrary.path,
+                lineup: currentLineup,
+                folder: folderName,
+                filename: 'cover.png',
+            });
+            if (data) {
+                coverCache[cacheKey] = data;
+                document.getElementById('folder-editor-cover').src = data;
+                document.getElementById('folder-cover-preview').src = data;
+                const listImg = document.querySelectorAll('.game-item')[selectedIndex]?.querySelector('img');
+                if (listImg) listImg.src = data;
+            }
+            closeMosaicPicker();
         });
     } catch (e) {
-        modalAlert('Failed to build mosaic: ' + e);
-        return;
+        await modalAlert('Failed to build mosaic: ' + e);
     }
-    // Refresh cover in editor + list. Bust cache.
-    const cacheKey = currentLineup + '/' + mosaicFolderEntry.folder;
-    delete coverCache[cacheKey];
-    try {
-        const data = await invoke('get_cover', {
-            gamesPath: dualLibrary.path,
-            lineup: currentLineup,
-            folder: mosaicFolderEntry.folder,
-            filename: 'cover.png',
-        });
-        if (data) {
-            coverCache[cacheKey] = data;
-            document.getElementById('folder-editor-cover').src = data;
-            document.getElementById('folder-cover-preview').src = data;
-            const listImg = document.querySelectorAll('.game-item')[selectedIndex]?.querySelector('img');
-            if (listImg) listImg.src = data;
-        }
-    } catch (_e) {}
-    closeMosaicPicker();
 }
 
 // ---- Save States ----
@@ -2063,7 +2129,13 @@ async function loadSaveStates(entry) {
         ? 'In-game memory (SRAM): file available'
         : 'In-game memory (SRAM): no file';
 
-    for (const state of saves.states) {
+    // Native slot numbers remain fixed even when only slots 2 and 4 exist.
+    // Never compact or depend on a backend response's iteration order.
+    const bySlot = new Map((saves.states || []).filter(state =>
+        Number.isInteger(state.slot) && state.slot >= 0 && state.slot < 4
+    ).map(state => [state.slot, state]));
+    for (let slot = 0; slot < 4; slot++) {
+        const state = bySlot.get(slot) || {slot, exists: false, thumbnail: null};
         const slotDiv = document.createElement('div');
         slotDiv.className = 'save-state-slot';
         if (state.preview_error) slotDiv.title = state.preview_error;
@@ -2278,6 +2350,7 @@ async function addFolder() {
 // Presents a destination picker (other lineup, subfolders) via modalSelect,
 // moves the game folder on disk and updates both source and destination gamelists.
 async function moveGame() {
+    if (operationBusy) return;
     const library = getLibrary();
     if (selectedIndex < 0) return;
     const entry = library.games[selectedIndex];
@@ -2329,116 +2402,76 @@ async function moveGame() {
         : dest.lineup;
 
     try {
-        // Persist the chosen titlebar (and any other pending edits) before the
-        // moved entry is reloaded from disk. Also wait for earlier saves.
-        if (saveTimeout) clearTimeout(saveTimeout);
-        saveTimeout = null;
-        await saveNow();
+        let warning;
+        await runOperation('Moving game…', async () => {
+            // Finish earlier saves while editing is blocked, so no old-path
+            // snapshot can recreate the game directory after the move.
+            if (saveTimeout) clearTimeout(saveTimeout);
+            saveTimeout = null;
+            await saveNow();
 
-        // Move on disk, get final folder name (may be renamed on conflict)
-        const finalName = await invoke('move_game', {
-            gamesPath: dualLibrary.path,
-            srcLineup: srcLineup,
-            folderName: entry.folder,
-            destLineup: destLineup
+            const movedIndex = selectedIndex;
+            const sourceGames = structuredClone(library.games);
+            const [movedEntry] = sourceGames.splice(movedIndex, 1);
+            recomputeSortIndices(sourceGames);
+
+            // Plan both lists without changing the visible library. The
+            // backend commits them together with the directory move.
+            let destinationGames;
+            if (dest.folder) {
+                const destination = await invoke('load_folder_contents', {
+                    gamesPath: dualLibrary.path,
+                    lineup: dest.lineup,
+                    folderName: dest.folder
+                });
+                destinationGames = structuredClone(destination.games);
+            } else {
+                const target = currentFolder && dest.lineup === currentLineup
+                    ? currentFolder.parentGames
+                    : dualLibrary[dest.lineup].games;
+                destinationGames = structuredClone(target);
+            }
+            for (const field of ['sor_demo', 'sor_pnum', 'sor_date', 'sor_name', 'sor_genr']) {
+                movedEntry.sort[field] = destinationGames.length;
+            }
+            destinationGames.push(movedEntry);
+            recomputeSortIndices(destinationGames);
+
+            const result = await invoke('move_game', {
+                gamesPath: dualLibrary.path,
+                srcLineup: srcLineup,
+                folderName: entry.folder,
+                destLineup: destLineup,
+                sourceSort: sourceGames.map(game => game.sort),
+                destinationSort: destinationGames.map(game => game.sort)
+            });
+
+            dualLibrary = result.library;
+            if (currentFolder) {
+                currentFolder.parentGames = dualLibrary[currentLineup].games;
+                dualLibrary[currentLineup].games = result.source.games;
+            }
+            coverCache = {};
+            warning = result.warning;
+
+            // Select the next entry from the committed source container.
+            const source = getLibrary();
+            selectedIndex = -1;
+            renderGameList();
+            updateStats();
+            if (source.games.length > 0) {
+                const nextIndex = Math.min(movedIndex, source.games.length - 1);
+                if (source.games[nextIndex].is_folder) selectFolder(nextIndex);
+                else selectGame(nextIndex);
+            } else {
+                document.getElementById('editor').classList.remove('active');
+                document.getElementById('folder-editor').style.display = 'none';
+                document.getElementById('placeholder').style.display = '';
+            }
         });
-
-        // Remove from source list
-        const movedIndex = selectedIndex;
-        library.games.splice(movedIndex, 1);
-        recomputeSortIndices(library.games);
-
-        // Re-read the moved game entry from disk (country may have changed)
-        const movedEntry = await invoke('load_game_entry', {
-            gamesPath: dualLibrary.path,
-            lineup: destLineup,
-            folderName: finalName
-        });
-
-        // Add to destination list
-        // Note: when inside a subfolder, dualLibrary[lineup].games points to the
-        // subfolder's games (swapped by enterFolder), so we must use
-        // currentFolder.parentGames to access the top-level list.
-        if (dest.folder) {
-            // Moving into a subfolder — load its contents, add, save
-            const folderLib = await invoke('load_folder_contents', {
-                gamesPath: dualLibrary.path,
-                lineup: dest.lineup,
-                folderName: dest.folder
-            });
-            movedEntry.sort.sor_demo = folderLib.games.length;
-            movedEntry.sort.sor_pnum = folderLib.games.length;
-            movedEntry.sort.sor_date = folderLib.games.length;
-            movedEntry.sort.sor_name = folderLib.games.length;
-            movedEntry.sort.sor_genr = folderLib.games.length;
-            folderLib.games.push(movedEntry);
-            recomputeSortIndices(folderLib.games);
-            await invoke('save_folder_contents', {
-                gamesPath: dualLibrary.path,
-                lineup: dest.lineup,
-                folderName: dest.folder,
-                library: folderLib
-            });
-            // Update folder's game_count in parent list
-            const destParent = (currentFolder && dest.lineup === currentLineup)
-                ? currentFolder.parentGames
-                : dualLibrary[dest.lineup].games;
-            const folderEntry = destParent.find(g => g.folder === dest.folder);
-            if (folderEntry) folderEntry.game_count = folderLib.games.length;
-        } else {
-            // Moving to top level of a lineup
-            const targetGames = (currentFolder && dest.lineup === currentLineup)
-                ? currentFolder.parentGames
-                : dualLibrary[dest.lineup].games;
-            movedEntry.sort.sor_demo = targetGames.length;
-            movedEntry.sort.sor_pnum = targetGames.length;
-            movedEntry.sort.sor_date = targetGames.length;
-            movedEntry.sort.sor_name = targetGames.length;
-            movedEntry.sort.sor_genr = targetGames.length;
-            targetGames.push(movedEntry);
-            recomputeSortIndices(targetGames);
-        }
-
-        // Save source subfolder contents and update parent game_count
-        if (currentFolder) {
-            await invoke('save_folder_contents', {
-                gamesPath: dualLibrary.path,
-                lineup: currentLineup,
-                folderName: currentFolder.name,
-                library: library
-            });
-            const parentEntry = currentFolder.parentGames.find(g => g.folder === currentFolder.name);
-            if (parentEntry) parentEntry.game_count = library.games.length;
-        }
-
-        // Save top-level lineups: temporarily restore parent games if inside a subfolder,
-        // since dualLibrary[lineup].games currently points to subfolder contents
-        let subfolderGames = null;
-        if (currentFolder) {
-            subfolderGames = dualLibrary[currentLineup].games;
-            dualLibrary[currentLineup].games = currentFolder.parentGames;
-        }
-        await invoke('save_library', { gamesPath: dualLibrary.path, library: dualLibrary });
-        if (subfolderGames) {
-            dualLibrary[currentLineup].games = subfolderGames;
-        }
-
-        // Update UI: auto-select next game in current list
-        selectedIndex = -1;
-        renderGameList();
-        updateStats();
-        if (library.games.length > 0) {
-            const nextIndex = movedIndex < library.games.length ? movedIndex : library.games.length - 1;
-            const nextEntry = library.games[nextIndex];
-            if (nextEntry.is_folder) selectFolder(nextIndex);
-            else selectGame(nextIndex);
-        } else {
-            document.getElementById('editor').classList.remove('active');
-            document.getElementById('folder-editor').style.display = 'none';
-            document.getElementById('placeholder').style.display = '';
-        }
+        if (warning) await modalAlert('Game moved, but ' + warning);
     } catch (e) {
-        modalAlert('Error moving game: ' + e);
+        await modalAlert('Error moving game: ' + e);
     }
 }
 
@@ -2509,7 +2542,7 @@ function autoSave() {
     if (saveTimeout) clearTimeout(saveTimeout);
     saveTimeout = setTimeout(() => {
         saveTimeout = null;
-        saveNow().catch(() => {}); // saveNow logs failures; Publish reports them.
+        saveNow().catch(() => {}); // The save status displays failures without interrupting typing.
     }, 300);
 }
 
@@ -2523,9 +2556,27 @@ function saveNow() {
         folderName: currentFolder.name,
         library: getLibrary(),
     } : { gamesPath: dualLibrary.path, library: dualLibrary });
-    saveInFlight = saveInFlight.catch(() => {}).then(() => invoke(command, args));
-    saveInFlight.catch(e => console.error('Auto-save failed:', e));
+    saveInFlight = saveInFlight.catch(() => {}).then(async () => {
+        setSaveStatus('Saving…');
+        try {
+            const result = await invoke(command, args);
+            setSaveStatus('Changes saved');
+            return result;
+        } catch (e) {
+            setSaveStatus('Update failed: ' + e, true);
+            console.error('Auto-save failed:', e);
+            throw e;
+        }
+    });
     return saveInFlight;
+}
+
+function setSaveStatus(message, failed = false) {
+    const status = document.getElementById('save-status');
+    if (!status) return;
+    status.textContent = message;
+    status.title = message;
+    if (status.setAttribute) status.setAttribute('data-state', failed ? 'error' : 'saved');
 }
 
 // ---- Helpers ----
@@ -2541,6 +2592,20 @@ function escHtml(s) {
 async function publishLibrary() {
     if (!dualLibrary || !dualLibrary.path) {
         modalAlert('Open a library folder first');
+        return;
+    }
+    if (dualLibrary.source_schema === 2) {
+        if (saveTimeout) clearTimeout(saveTimeout);
+        saveTimeout = null;
+        try {
+            await saveNow();
+        } catch (e) {
+            await modalAlert('Could not save the library: ' + e);
+        }
+        return;
+    }
+    if (dualLibrary.source_schema !== 1) {
+        await modalAlert('Reopen the library before exporting.');
         return;
     }
     const button = document.getElementById('btn-publish');

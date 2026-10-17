@@ -58,3 +58,17 @@ test('Read errors are visible rather than presented as empty slots', async () =>
     assert.match(status.textContent, /Could not read save data.*USB unavailable/);
     assert.equal(grid.children.length, 0);
 });
+
+test('Sparse and out-of-order responses retain all four native slot positions', async () => {
+    const { context, grid } = setup(async () => ({sram_present:false, states:[
+        {slot:3,exists:true,thumbnail:'fourth-preview'},
+        {slot:1,exists:true,thumbnail:'second-preview'},
+    ]}));
+    await vm.runInContext('loadSaveStates({folder: "GAME002"})', context);
+    assert.equal(grid.children.length,4);
+    assert.deepEqual(grid.children.map(slot=>slot.children[1].textContent),['Slot 1','Slot 2','Slot 3','Slot 4']);
+    assert.equal(grid.children[0].children[0].textContent,'Empty');
+    assert.equal(grid.children[1].children[0].src,'second-preview');
+    assert.equal(grid.children[2].children[0].textContent,'Empty');
+    assert.equal(grid.children[3].children[0].src,'fourth-preview');
+});

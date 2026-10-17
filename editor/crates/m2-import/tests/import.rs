@@ -232,15 +232,45 @@ fn invalid_library_sources_do_not_create_or_replace_destinations() {
     let source = root.join("p9.bin");
     fs::write(&source, vec![0; 4096]).unwrap();
     let dest = root.join("new");
-    assert!(m2_import::create_library(&source, &dest, false, &root.join("bios"), &|_| {}).is_err());
+    let invalid_source =
+        m2_import::create_library(&source, &dest, false, &root.join("bios"), &|_| {})
+            .unwrap_err()
+            .to_string();
     assert!(!dest.exists());
     fs::create_dir(&dest).unwrap();
     fs::write(dest.join("keep"), "data").unwrap();
-    assert!(
+    // A USB root may already contain unrelated files. Its invalid source is
+    // rejected without replacing the destination or exposing staged resources.
+    assert_eq!(
         m2_import::create_library(&source, &dest, false, &root.join("bios"), &|_| {})
             .unwrap_err()
-            .to_string()
-            .contains("already exists")
+            .to_string(),
+        invalid_source
     );
     assert_eq!(fs::read_to_string(dest.join("keep")).unwrap(), "data");
+    assert_eq!(fs::read_dir(&dest).unwrap().count(), 1);
+
+    for reserved in ["game", "library", "source.json"] {
+        let path = dest.join(reserved);
+        if reserved == "source.json" {
+            fs::write(&path, "existing source").unwrap();
+        } else {
+            fs::create_dir(&path).unwrap();
+        }
+        let error =
+            m2_import::create_library(&source, &dest, false, &root.join("bios"), &|_| {})
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("Destination already contains"), "{error}");
+        assert!(error.contains(reserved), "{error}");
+        assert_eq!(fs::read_to_string(dest.join("keep")).unwrap(), "data");
+        assert_eq!(fs::read_dir(&dest).unwrap().count(), 2);
+        if reserved == "source.json" {
+            assert_eq!(fs::read_to_string(&path).unwrap(), "existing source");
+            fs::remove_file(path).unwrap();
+        } else {
+            assert_eq!(fs::read_dir(&path).unwrap().count(), 0);
+            fs::remove_dir(path).unwrap();
+        }
+    }
 }

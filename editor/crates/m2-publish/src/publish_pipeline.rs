@@ -59,7 +59,7 @@ pub struct PublishReport {
 }
 
 pub fn publish(opts: &PublishOptions) -> Result<PublishReport, Error> {
-
+    reject_source_publication(opts)?;
     let templates = Templates::new(&opts.stock_data_root)?;
     // Reject a different console runtime before changing published files.
     if let Some(root) = crate::usb::usb_root(&opts.output_root) {
@@ -71,8 +71,19 @@ pub fn publish(opts: &PublishOptions) -> Result<PublishReport, Error> {
             }
         }
     }
+    crate::identity::migrate_library(&opts.library_root).map_err(Error::Library)?;
+    let per_game_saves = opts.output_root == opts.library_root.join("published");
+    // Decode the last published mapping before replacing it. Current editor
+    // order is not proof of which game owned a legacy positional save.
+    if per_game_saves && opts.output_root.join("folders").is_dir() {
+        crate::sync::sync_library_from_published(&crate::sync::SyncOptions {
+            library_root: opts.library_root.clone(),
+            published_root: opts.output_root.clone(),
+        })?;
+    }
     crate::rom_store::migrate(&opts.library_root)?;
     let library = crate::library::load(&opts.library_root)?;
+    if per_game_saves { prepare_per_game_save_store(&library)?; }
     let fonts = crate::fonts::prepare(&library, &opts.library_root, &opts.stock_data_root)?;
 
     let mut report = PublishReport::default();
@@ -82,13 +93,13 @@ pub fn publish(opts: &PublishOptions) -> Result<PublishReport, Error> {
     // variable name stays `m2_root` throughout this file for readability.
     let m2_root = opts.output_root.clone();
     for (lineup_name, lineup) in [("jp", &library.jp), ("us", &library.us)] {
-        emit_lineup(lineup_name, lineup, &templates, &m2_root, &mut report)?;
+        emit_lineup(lineup_name, lineup, &templates, &m2_root, per_game_saves, &mut report)?;
     }
 
     // Rebuild data_008_0000.bin: library BACKUP_FLAGS + active pack's SRAM.
     // Console reads this on boot; without it, the engine starts with defaults
     // (no per-library prefs / no SRAM for the active pack).
-    emit_data_008(&opts.library_root, &m2_root, &mut report)?;
+    emit_data_008_with_save_schema(&opts.library_root, &m2_root, per_game_saves, &mut report)?;
 
     report.usb = crate::usb::prepare_usb(&opts.output_root, templates.console)?;
     crate::fonts::install(&fonts, &opts.output_root)?;
@@ -102,10 +113,271 @@ pub fn publish(opts: &PublishOptions) -> Result<PublishReport, Error> {
             eprintln!("WARN: old ROM cleanup deferred: {e}");
         }
     }
+    if per_game_saves {
+        // Opt in only after the matching hook/scripts/catalogues are ready.
+        // Old exports and their original saves remain usable for migration.
+        write_save_marker(&opts.output_root.join(".per-game-saves-v2"), b"2\n")?;
+    }
     Ok(report)
 }
 
+/// Source libraries already contain the console's live layout. Older clients
+/// must not replace it with a legacy export, even before template validation.
+fn reject_source_publication(opts: &PublishOptions) -> Result<(), Error> {
+    if !crate::source_library::enabled(&opts.library_root) {
+        return Ok(());
+    }
+    let published = opts.library_root.join("published");
+    if opts.output_root == published
+        || publication_destination(&opts.output_root) == publication_destination(&published)
+    {
+        return Err(Error::Library(
+            "This library is read directly from its folders by the console. Changes are saved automatically; Publish is not needed. Reopen it in the current editor.".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Resolve existing aliases without creating the output directory. Collapse
+/// the missing suffix against its nearest existing ancestor, including '..'.
+fn publication_destination(path: &Path) -> PathBuf {
+    if let Ok(resolved) = std::fs::canonicalize(path) {
+        return resolved;
+    }
+    let mut ancestor = path;
+    let mut suffix = Vec::new();
+    while let Some(parent) = ancestor.parent() {
+        let Some(component) = ancestor.components().next_back() else {
+            break;
+        };
+        suffix.push(component.as_os_str());
+        let existing = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        };
+        if let Ok(mut resolved) = std::fs::canonicalize(existing) {
+            for component in suffix.into_iter().rev() {
+                if component == ".." {
+                    resolved.pop();
+                } else if component != "." {
+                    resolved.push(component);
+                }
+            }
+            return resolved;
+        }
+        ancestor = parent;
+    }
+    path.to_path_buf()
+}
+
+fn write_save_marker(path: &Path, bytes: &[u8]) -> Result<(), Error> {
+    use std::io::Write;
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(Error::Library(format!("Refusing linked save marker: {}", path.display())));
+    }
+    let parent = path.parent().ok_or_else(|| Error::Library("Save marker has no directory".into()))?;
+    std::fs::create_dir_all(parent)?;
+    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+    file.write_all(bytes)?;
+    file.as_file().sync_all()?;
+    file.persist(path).map_err(|e| Error::Io(e.error))?;
+    Ok(())
+}
+
+pub(crate) fn prepare_per_game_save_store(library: &Library) -> Result<(), Error> {
+    for lineup in [&library.jp, &library.us] {
+        for game in iter_all_games(lineup) {
+            let id = game.game_id().ok_or_else(|| Error::Library(format!("Missing save identity: {}", game.source_dir.display())))?;
+            let alternate_tags: Vec<&str> = [&game.data.rom_alt.region_tag_e,
+                &game.data.rom_alt.region_tag_s1, &game.data.rom_alt.region_tag_s2]
+                .into_iter().flatten().map(String::as_str).collect();
+            if let Some(kind) = game.save_state_type() {
+                crate::save_format::validate_canonical_states(&game.saves_dir(),
+                    &game.region_tag, game.data.rom.region_tag.as_deref(), &alternate_tags, kind)
+                    .map_err(Error::Library)?;
+            }
+            let marker = game.saves_dir().join(".chronos-game-id");
+            let expected = format!("{id}\n");
+            if marker.is_file() {
+                if std::fs::read(&marker)? != expected.as_bytes() {
+                    return Err(Error::Library(format!("Save directory belongs to a different game: {}", marker.display())));
+                }
+            } else { write_save_marker(&marker, expected.as_bytes())?; }
+            let sram_schema = game.saves_dir().join(".chronos-sram-schema");
+            if game.sram_path().exists() {
+                if std::fs::metadata(game.sram_path())?.len() != 8448 ||
+                    std::fs::read(&sram_schema).ok().as_deref() != Some(b"2\n") {
+                    return Err(Error::Library(format!("SRAM needs verified migration from the original aggregate before enabling per-game saves: {}", game.sram_path().display())));
+                }
+            } else if std::fs::read(&sram_schema).ok().as_deref() != Some(b"2\n") {
+                write_save_marker(&sram_schema, b"2\n")?;
+            }
+        }
+    }
+    Ok(())
+}
+
 // ---- ROM packing ----
+
+#[cfg(test)]
+mod source_publication_tests {
+    use super::*;
+    use std::{collections::BTreeMap, fs};
+
+    fn fixture(root: &Path) -> PublishOptions {
+        let library = root.join("library");
+        let game = library.join("jp/GAME001");
+        fs::create_dir_all(game.join("saves")).unwrap();
+        fs::write(library.join(crate::source_library::MARKER), b"2\n").unwrap();
+        fs::write(
+            library.join("jp/gamelist.json"),
+            br#"[{"folder":"GAME001"}]"#,
+        )
+        .unwrap();
+        // No identity and a missing ROM expose any accidental migration or
+        // attempt to enter the old pipeline before rejecting publication.
+        fs::write(game.join("game.json"), br#"{"display":{"name":"Keep me"},"rom":{"arch":"tg16","rom":"missing.pce"},"future":{"keep":true}}"#).unwrap();
+        fs::write(game.join("sram.bin"), vec![0x7b; 8448]).unwrap();
+        for slot in 0..4 {
+            fs::write(game.join(format!("saves/state_{slot}.bin")), [slot, 0x1a]).unwrap();
+            fs::write(
+                game.join(format!("saves/state_{slot}_meta.bin")),
+                [slot, 0xff],
+            )
+            .unwrap();
+        }
+        PublishOptions {
+            output_root: library.join("published"),
+            library_root: library,
+            stock_data_root: root.join("missing-stock-templates"),
+            incremental: false,
+        }
+    }
+
+    fn snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+        fn collect(root: &Path, path: &Path, output: &mut BTreeMap<PathBuf, Vec<u8>>) {
+            for entry in fs::read_dir(path).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                let kind = entry.file_type().unwrap();
+                let key = path.strip_prefix(root).unwrap().to_owned();
+                if kind.is_dir() {
+                    output.insert(key, b"directory".to_vec());
+                    collect(root, &path, output);
+                } else if kind.is_symlink() {
+                    output.insert(
+                        key,
+                        fs::read_link(path)
+                            .unwrap()
+                            .to_string_lossy()
+                            .as_bytes()
+                            .to_vec(),
+                    );
+                } else {
+                    output.insert(key, fs::read(path).unwrap());
+                }
+            }
+        }
+        let mut output = BTreeMap::new();
+        collect(root, root, &mut output);
+        output
+    }
+
+    fn assert_refused_without_changes(root: &Path, opts: &PublishOptions) {
+        let before = snapshot(root);
+        let error = publish(opts).unwrap_err();
+        assert!(matches!(&error, Error::Library(_)), "{error}");
+        let message = error.to_string();
+        assert!(
+            message.contains("read directly from its folders"),
+            "{message}"
+        );
+        assert!(message.contains("saved automatically"), "{message}");
+        assert!(message.contains("Publish is not needed"), "{message}");
+        assert_eq!(snapshot(root), before);
+    }
+
+    #[test]
+    fn source_publication_is_refused_before_templates_roms_or_identity_migration() {
+        for destination_exists in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let opts = fixture(root.path());
+            if destination_exists {
+                fs::create_dir_all(opts.output_root.join("save")).unwrap();
+                fs::write(
+                    opts.output_root.join("save/data_008_0000.bin"),
+                    b"live console save sentinel",
+                )
+                .unwrap();
+                fs::write(
+                    opts.output_root.join("keep.bin"),
+                    b"existing publication sentinel",
+                )
+                .unwrap();
+            }
+            assert_refused_without_changes(root.path(), &opts);
+            assert_eq!(opts.output_root.exists(), destination_exists);
+        }
+    }
+
+    #[test]
+    fn equivalent_relative_and_parent_paths_cannot_bypass_source_guard() {
+        let root = tempfile::tempdir_in(".").unwrap();
+        let mut opts = fixture(root.path());
+        opts.output_root = fs::canonicalize(&opts.library_root)
+            .unwrap()
+            .join("../library/published");
+        assert_refused_without_changes(root.path(), &opts);
+        opts.output_root = fs::canonicalize(root.path())
+            .unwrap()
+            .join("not-created/../library/published");
+        assert_refused_without_changes(root.path(), &opts);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_library_and_output_symlink_aliases_cannot_bypass_source_guard() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let mut opts = fixture(root.path());
+        fs::create_dir(&opts.output_root).unwrap();
+        fs::write(opts.output_root.join("keep.bin"), b"live data").unwrap();
+        let output_alias = root.path().join("output-alias");
+        symlink(&opts.output_root, &output_alias).unwrap();
+        opts.output_root = output_alias;
+        assert_refused_without_changes(root.path(), &opts);
+
+        let library_alias = root.path().join("library-alias");
+        symlink(&opts.library_root, &library_alias).unwrap();
+        opts.output_root = opts.library_root.join("published");
+        opts.library_root = library_alias;
+        assert_refused_without_changes(root.path(), &opts);
+    }
+
+    #[test]
+    fn standalone_exports_and_legacy_canonical_publication_still_validate_templates() {
+        let root = tempfile::tempdir().unwrap();
+        let mut opts = fixture(root.path());
+        opts.output_root = root.path().join("standalone-export");
+        let before = snapshot(root.path());
+        assert!(matches!(publish(&opts), Err(Error::Template(_))));
+        assert_eq!(snapshot(root.path()), before);
+
+        opts.output_root = opts.library_root.join("published");
+        for marker in [Some(b"1\n".as_slice()), None] {
+            let marker_path = opts.library_root.join(crate::source_library::MARKER);
+            if let Some(bytes) = marker {
+                fs::write(&marker_path, bytes).unwrap();
+            } else {
+                fs::remove_file(&marker_path).unwrap();
+            }
+            let before = snapshot(root.path());
+            assert!(matches!(publish(&opts), Err(Error::Template(_))));
+            assert_eq!(snapshot(root.path()), before);
+        }
+    }
+}
 
 #[cfg(test)]
 mod rom_tests {
@@ -288,6 +560,7 @@ fn emit_lineup(
     lineup: &Lineup,
     templates: &Templates,
     m2_root: &Path,
+    per_game_saves: bool,
     report: &mut PublishReport,
 ) -> Result<(), Error> {
     let paths = templates.console.templates();
@@ -313,7 +586,7 @@ fn emit_lineup(
     emit_root_pack(
         lineup_name, lineup, &title_prof_template, &title_mode_top_template,
         &title_select_template, &kind, select_filename,
-        m2_root, report,
+        m2_root, per_game_saves, report,
     )?;
 
     // Per-subfolder packs
@@ -321,7 +594,7 @@ fn emit_lineup(
         emit_folder_pack(
             lineup_name, lineup, folder, &title_prof_template, &title_mode_top_template,
             &title_select_template, &kind, select_filename,
-            m2_root, report,
+            m2_root, per_game_saves, report,
         )?;
     }
     Ok(())
@@ -336,6 +609,7 @@ fn emit_root_pack(
     lineup_kind: &LineupKind,
     select_filename: &str,
     m2_root: &Path,
+    per_game_saves: bool,
     report: &mut PublishReport,
 ) -> Result<(), Error> {
     let folder_dir = m2_root.join("folders").join(lineup_name).join("_root");
@@ -359,18 +633,18 @@ fn emit_root_pack(
     // index space (each pack uses up to LINEUPMAX (50) of the systemdata's
     // 150-slot array; different packs share the slot space but only one pack
     // is live at a time).
-    let prof_psb = title_prof::generate(&title_prof::GenInputs {
+    let prof_psb = title_prof::generate_with_save_schema(&title_prof::GenInputs {
         template_psb: title_prof_template,
         games: &synth_games,
-    })?;
+    }, per_game_saves)?;
     write_psb_m(&folder_dir.join("title_prof.psb.m"), &prof_psb)?;
     report.psb_files_written += 1;
 
-    let mode_top_psb = title_mode_top::generate(&title_mode_top::GenInputs {
+    let mode_top_psb = title_mode_top::generate_with_save_schema(&title_mode_top::GenInputs {
         template_psb: title_mode_top_template,
         lineup: clone_kind(lineup_kind),
         games: &synth_games,
-    })?;
+    }, per_game_saves)?;
     write_psb_m(&folder_dir.join("title_mode_top.psb.m"), &mode_top_psb)?;
     report.psb_files_written += 1;
 
@@ -386,10 +660,12 @@ fn emit_root_pack(
 
     // Save states: per-game library files emitted at the destination's
     // positional slot. Walks synth_games (root-pack ordered games).
+    if !per_game_saves {
     emit_pack_state_files(&folder_dir.join("saves"), &synth_games, lineup_kind, report)?;
     // SRAM: concatenate per-game library blocks in display order. Identity
     // is purely positional (block at index i = game at synth_games[i]).
     emit_pack_sram_bin(&folder_dir.join("saves"), &synth_games, report)?;
+    }
 
     report.folders_emitted += 1;
     Ok(())
@@ -397,7 +673,7 @@ fn emit_root_pack(
 
 fn emit_folder_pack(
     lineup_name: &str,
-    lineup: &Lineup,
+    _lineup: &Lineup,
     folder: &Folder,
     title_prof_template: &[u8],
     title_mode_top_template: &[u8],
@@ -405,6 +681,7 @@ fn emit_folder_pack(
     lineup_kind: &LineupKind,
     select_filename: &str,
     m2_root: &Path,
+    per_game_saves: bool,
     report: &mut PublishReport,
 ) -> Result<(), Error> {
     let folder_dir = m2_root.join("folders").join(lineup_name).join(&folder.dir_name);
@@ -419,18 +696,18 @@ fn emit_folder_pack(
     let games_with_back: Vec<Game> = folder_pack_games(folder, lineup_name, &back_png);
 
     // Per-pack title_prof. See emit_root_pack for rationale.
-    let prof_psb = title_prof::generate(&title_prof::GenInputs {
+    let prof_psb = title_prof::generate_with_save_schema(&title_prof::GenInputs {
         template_psb: title_prof_template,
         games: &games_with_back,
-    })?;
+    }, per_game_saves)?;
     write_psb_m(&folder_dir.join("title_prof.psb.m"), &prof_psb)?;
     report.psb_files_written += 1;
 
-    let mode_top_psb = title_mode_top::generate(&title_mode_top::GenInputs {
+    let mode_top_psb = title_mode_top::generate_with_save_schema(&title_mode_top::GenInputs {
         template_psb: title_mode_top_template,
         lineup: clone_kind(lineup_kind),
         games: &games_with_back,
-    })?;
+    }, per_game_saves)?;
     write_psb_m(&folder_dir.join("title_mode_top.psb.m"), &mode_top_psb)?;
     report.psb_files_written += 1;
 
@@ -453,11 +730,13 @@ fn emit_folder_pack(
     // change) — migrate remaps each save's slot based on its internal
     // regionTag. games_with_back puts the back card at index 0, so real
     // games start at game_index 1; migration uses this exact ordering.
+    if !per_game_saves {
     emit_pack_state_files(&folder_dir.join("saves"), &games_with_back, lineup_kind, report)?;
     // SRAM: same positional ordering as title_mode_top (back card at
     // slot 0 gets 8448 zeros — its sram_path() points at a non-existent
     // file, so the slot stays zero).
     emit_pack_sram_bin(&folder_dir.join("saves"), &games_with_back, report)?;
+    }
 
     report.folders_emitted += 1;
     Ok(())
@@ -526,6 +805,8 @@ fn back_card_game(lineup_name: &str, back_png: &Path) -> Game {
         .unwrap_or_else(|| "back_arrow.png".to_string());
     let source_dir = back_png.parent().map(|p| p.to_path_buf()).unwrap_or_default();
     let data = GameJson {
+        game_id: None,
+        native_region_tag: None,
         display: GameDisplay {
             name: "Back".into(),
             tname: "Back".into(),
@@ -535,6 +816,7 @@ fn back_card_game(lineup_name: &str, back_png: &Path) -> Game {
             csize: 11,    // back marker — script's csize==11 branch calls ::exitGameFolder()
             players: 0,
             demo_time: 0,
+            ..Default::default()
         },
         emulator: GameEmulator::default(),
         rom: GameRom {
@@ -550,6 +832,7 @@ fn back_card_game(lineup_name: &str, back_png: &Path) -> Game {
         rom_alt: RomAlt::default(),
         cover: Some(cover_filename),
         cover_size: None,
+        ..Default::default()
     };
     Game {
         dir_name: "BACK".to_string(),
@@ -605,6 +888,8 @@ fn folder_to_game(folder: &Folder, lineup_name: &str) -> Game {
     use crate::library::*;
     let region_tag = folder.region_tag(lineup_name);
     let data = GameJson {
+        game_id: None,
+        native_region_tag: None,
         display: GameDisplay {
             name: folder.display_name.clone(),
             tname: folder.display_name.clone(),
@@ -614,6 +899,7 @@ fn folder_to_game(folder: &Folder, lineup_name: &str) -> Game {
             csize: 10, // folder marker — script logic treats csize=10 as enter-folder
             players: 0,
             demo_time: 0,
+            ..Default::default()
         },
         emulator: GameEmulator::default(),
         rom: GameRom {
@@ -629,6 +915,7 @@ fn folder_to_game(folder: &Folder, lineup_name: &str) -> Game {
         rom_alt: RomAlt::default(),
         cover: Some("cover.png".to_string()),
         cover_size: None,
+        ..Default::default()
     };
     Game {
         dir_name: folder.dir_name.clone(),
@@ -856,9 +1143,10 @@ fn read_current(m2_root: &Path) -> Option<(String, String)> {
     Some((l.to_string(), d.to_string()))
 }
 
-fn emit_data_008(
+fn emit_data_008_with_save_schema(
     library_root: &Path,
     m2_root: &Path,
+    per_game_saves: bool,
     report: &mut PublishReport,
 ) -> Result<(), Error> {
     let save_dir = m2_root.join("save");
@@ -884,6 +1172,7 @@ fn emit_data_008(
     }
 
     let mut buf = vec![0u8; DATA_008_SIZE];
+    let prefix_size = if per_game_saves { 0x5e84 } else { SRAM_OFFSET };
 
     // BACKUP_FLAGS section: copy first 0x5E80 bytes of library/data_008
     // (synced from console-side writes in prior workflow; usually absent
@@ -891,7 +1180,7 @@ fn emit_data_008(
     let lib_data_008 = library_root.join("data_008_0000.bin");
     if lib_data_008.exists() {
         let bytes = std::fs::read(&lib_data_008)?;
-        let n = bytes.len().min(SRAM_OFFSET);
+        let n = bytes.len().min(prefix_size);
         buf[..n].copy_from_slice(&bytes[..n]);
     }
 
@@ -899,7 +1188,7 @@ fn emit_data_008(
     let (lineup, dir) = read_current(m2_root)
         .unwrap_or_else(|| ("jp".to_string(), "_root".to_string()));
     let active_sram = m2_root.join("folders").join(&lineup).join(&dir).join("saves/sram.bin");
-    if active_sram.exists() {
+    if !per_game_saves && active_sram.exists() {
         let bytes = std::fs::read(&active_sram)?;
         let n = bytes.len().min(SRAM_BLOCK_SIZE * SRAM_GAME_COUNT);
         buf[SRAM_OFFSET .. SRAM_OFFSET + n].copy_from_slice(&bytes[..n]);
@@ -912,6 +1201,32 @@ fn emit_data_008(
     std::fs::write(&meta_008_path, metadata)?;
     report.data_008_emitted = true;
     Ok(())
+}
+
+/// Keep the native settings mount available for the existing P7 launcher.
+/// This is a working save source, not a generated game/folder catalogue.
+/// Existing live bytes and their metadata are never rebuilt during opening.
+pub(crate) fn prepare_native_working_save_source(library_root: &Path) -> Result<(), Error> {
+    let root = library_root.join("published");
+    std::fs::create_dir_all(root.join("roms"))?;
+    let save = root.join("save");
+    std::fs::create_dir_all(&save)?;
+    let data = save.join("data_008_0000.bin");
+    let meta = save.join("meta_008_0000.bin");
+    match (data.is_file(), meta.is_file()) {
+        (true, true) => return Ok(()),
+        (true, false) => {
+            // Missing metadata can be reconstructed from the exact current
+            // data without changing settings/SRAM or its modification time.
+            let bytes = std::fs::read(&data)?;
+            let metadata = system_save_metadata(&bytes)?;
+            return crate::save_format::atomic_write(&meta, &metadata).map_err(Error::Library);
+        }
+        (false, true) => return Err(Error::Library(format!("Native settings data is missing but metadata exists: {}. Original files were retained.", save.display()))),
+        (false, false) => {}
+    }
+    let mut report = PublishReport::default();
+    emit_data_008_with_save_schema(library_root, &root, true, &mut report)
 }
 
 fn system_save_metadata(data: &[u8]) -> Result<Vec<u8>, Error> {

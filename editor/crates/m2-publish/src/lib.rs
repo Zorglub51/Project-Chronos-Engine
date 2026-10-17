@@ -40,6 +40,9 @@
 // Other output paths remain standalone exports (roms/, folders/, save/).
 
 mod library;
+pub mod parameters;
+pub mod identity;
+pub mod save_format;
 pub mod rom_store;
 mod publish_pipeline;
 mod sync;
@@ -55,8 +58,10 @@ mod title_mode_top;
 mod title_prof;
 mod title_select;
 mod usb;
+pub mod source_library;
+pub mod runtime_assets;
 
-pub use library::{CoverSize, Folder, Game, GameRom, Library, Lineup, LineupEntry};
+pub use library::{load as load_library, CoverSize, Folder, Game, GameRom, Library, Lineup, LineupEntry};
 pub use publish_pipeline::{publish, PublishOptions, PublishReport};
 pub use sync::{sync_library_from_published, SyncOptions, SyncReport};
 pub use usb::UsbPreparation;

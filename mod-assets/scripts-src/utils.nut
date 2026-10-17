@@ -516,13 +516,22 @@ class ResourceCache {
       else
         m_rsc.unload();
 
-      m_rsc.load(m_path);
-      while (m_rsc.loading)
-        wait(0);
+      local paths = m_path;
+      if (::chronos_library_enabled()) {
+        paths = [];
+        foreach (entry in m_path)
+          if (!::chronos_dynamic_config(entry)) paths.append(entry);
+      }
+      if (paths.len() > 0) {
+        m_rsc.load(paths);
+        while (m_rsc.loading) wait(0);
+      }
     }
   } 
 
   function get(_path) {
+    if (::chronos_library_enabled() && ::chronos_dynamic_config(_path))
+      return { root = ::chronos_library().config(_path) };
     return m_rsc.find(_path);
   }
 
@@ -1303,6 +1312,8 @@ s_loaded_config <- {};
 
 function util_load_psb_get_by_instance(_path, _only_cache_when_release_build = false)
 {
+  if (::chronos_library_enabled() && ::chronos_dynamic_config(_path))
+    return { root = ::chronos_library().config(_path) };
   local force_reload = _only_cache_when_release_build && ::isDebugBuild(); // 読み替えると最後の参照しか生きていないので、instanceで使う時は読み替えず常にキャッシュ
   // FOLDER HACK: bypass the PSB cache so config files swapped by the
   // ::enterGameFolder() / ::exitGameFolder() natives are picked up on next read.
@@ -1316,6 +1327,8 @@ function util_load_psb_get_by_instance(_path, _only_cache_when_release_build = f
 
 function util_load_config(_path)
 {
+  if (::chronos_library_enabled() && ::chronos_dynamic_config(_path))
+    return ::chronos_library().config(_path);
   return copy_PSBValue( ::util_load_psb_get_by_instance(_path, true).root );
 }
 
@@ -2999,3 +3012,6 @@ function getlastLanguage()
 	return s_last_language;
 }
 
+
+// chronos_saves.nut is appended by build-scripts.py. Native boot executes
+// this file through Resource.exec(), which cannot nest system() loading.

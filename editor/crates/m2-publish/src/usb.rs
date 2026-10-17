@@ -7,6 +7,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const ASSETS: &[(&str, &[u8])] = &[
+    ("system/script/emulator.nut.m", include_bytes!("../../../../mod-assets/scripts-built/emulator.nut.m")),
+    ("system/script/systemdata_saveload.nut.m", include_bytes!("../../../../mod-assets/scripts-built/systemdata_saveload.nut.m")),
+    ("system/script/pause_main.nut.m", include_bytes!("../../../../mod-assets/scripts-built/pause_main.nut.m")),
+    ("system/script/backup.nut.m", include_bytes!("../../../../mod-assets/scripts-built/backup.nut.m")),
     (
         "system/script/const.nut.m",
         include_bytes!("../../../../mod-assets/scripts-built/const.nut.m"),
@@ -29,7 +33,7 @@ const ASSETS: &[(&str, &[u8])] = &[
     ),
 ];
 
-const ORIGINAL_FILES: &[&str] = &[
+pub(crate) const ORIGINAL_FILES: &[&str] = &[
     "m2engage",
     "libopus.so.0",
     "version",
@@ -91,18 +95,11 @@ pub fn prepare_usb(output: &Path, console: ConsoleVariant) -> Result<Option<UsbP
             continue;
         }
         // Readers see either the previous complete asset or the new one.
-        let temporary = destination.with_extension("chronos-tmp");
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
+        let mut file = tempfile::NamedTempFile::new_in(destination.parent().unwrap())?;
         use std::io::Write;
-        let written = file.write_all(bytes).and_then(|()| file.sync_all());
-        drop(file);
-        if let Err(error) = written.and_then(|()| fs::rename(&temporary, &destination)) {
-            let _ = fs::remove_file(&temporary);
-            return Err(error.into());
-        }
+        file.write_all(bytes)?;
+        file.as_file().sync_all()?;
+        file.persist(&destination).map_err(|e| Error::Io(e.error))?;
         assets_updated += 1;
     }
 
@@ -118,6 +115,13 @@ pub fn prepare_usb(output: &Path, console: ConsoleVariant) -> Result<Option<UsbP
         assets_updated,
         missing_original_files,
     }))
+}
+
+/// Prepare the runtime stored on the key independently of legacy catalogue
+/// publication. Source V2 libraries use this during creation and opening.
+pub fn prepare_source_runtime(library: &Path, console: ConsoleVariant) -> Result<UsbPreparation, Error> {
+    prepare_usb(&library.join("published"), console)?
+        .ok_or_else(|| Error::Library("Source libraries need the USB layout <root>/library and <root>/game".into()))
 }
 
 #[cfg(test)]
@@ -153,7 +157,7 @@ mod tests {
         fs::create_dir_all(tmp.0.join("game/save")).unwrap();
         fs::write(tmp.0.join("game/save/data_008_0000.bin"), b"user save").unwrap();
         let first = prepare_usb(&output, ConsoleVariant::Japan).unwrap().unwrap();
-        assert_eq!(first.assets_updated, 5);
+        assert_eq!(first.assets_updated, ASSETS.len());
         assert!(first
             .missing_original_files
             .contains(&"game/m2engage".to_owned()));

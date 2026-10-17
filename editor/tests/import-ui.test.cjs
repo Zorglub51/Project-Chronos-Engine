@@ -8,7 +8,7 @@ const romImport = app.slice(app.indexOf('async function importRomFile('), app.in
 function setup(invoke, save = async () => {}) {
     const elements = new Map();
     const element = id => {
-        if (!elements.has(id)) elements.set(id, {value:'',textContent:'',style:{},classList:{add(){},remove(){},toggle(){}},removeAttribute(key){delete this[key];}});
+        if (!elements.has(id)) elements.set(id, {value:'',textContent:'',style:{},listeners:{},classList:{add(){},remove(){},toggle(){}},removeAttribute(key){delete this[key];},addEventListener(type,handler){this.listeners[type]=handler;}});
         return elements.get(id);
     };
     const entry = {folder:'GAME001',game:{rom:{rom:'old.pcd',arch:'tg16'},display:{csize:0}}};
@@ -82,28 +82,107 @@ test('Missing BIOS opens settings without importing or changing the game',async(
 });
 test('Creation passes the chosen empty/original mode and opens only a completed library',async()=>{
     for (const mode of ['empty','stock']) {
-        const t=setup(async()=>({root:'/parent/New library',games:mode==='stock'?58:0,bios:{source:'dump'},warnings:[]}));
+        const t=setup(async()=>({root:'/Volumes/CHRONOS',source_schema:2,games:mode==='stock'?58:0,bios:{source:'dump'},warnings:[]}));
         t.context.dualLibrary=null;
-        t.element('new-source').value='/backup/nand.bin';t.element('new-parent').value='/parent';
-        t.element('new-name').value='New library';t.element('new-contents').value=mode;
+        t.element('new-source').value='/backup/nand.bin';t.element('new-destination').value='/Volumes/CHRONOS';
+        t.element('new-contents').value=mode;
         const opened=[];
         t.context.loadLibrary=async root=>opened.push(root);
         t.context.rememberLibrary=async root=>opened.push(root);
         await vm.runInContext('createNewLibrary()',t.context);
         assert.equal(t.calls[0].command,'create_library_from_dump');
+        assert.equal(t.calls[0].args.destination,'/Volumes/CHRONOS');
         assert.equal(t.calls[0].args.includeGames,mode==='stock');
-        assert.deepEqual(opened,['/parent/New library','/parent/New library']);
+        assert.deepEqual(opened,['/Volumes/CHRONOS','/Volumes/CHRONOS']);
         assert.equal(t.element('btn-new-create').disabled,false);
     }
 });
 test('Creation errors remain in the assistant without replacing the open library',async()=>{
     const t=setup(async()=>{throw new Error('Truncated P9');});
-    t.element('new-source').value='/backup/p9.bin';t.element('new-parent').value='/parent';t.element('new-name').value='New';
+    t.element('new-source').value='/backup/p9.bin';t.element('new-destination').value='/Volumes/CHRONOS';
     t.context.loadLibrary=async()=>assert.fail('must not open failed output');
     await vm.runInContext('createNewLibrary()',t.context);
     assert.match(t.element('new-error').textContent,/Truncated P9/);
     assert.equal(t.element('btn-new-create').disabled,false);
     assert.equal(t.context.dualLibrary.path,'/key/library');
+});
+
+test('Creation uses the selected destination exactly on macOS, Linux and Windows without a Chronos child',async()=>{
+    for(const destination of ['/Volumes/CHRONOS','/Volumes/CHRONOS/','/media/user/CHRONOS/','/','C:\\','E:\\','\\\\server\\share\\','/home/user/Library preparation']) {
+        const t=setup(async()=>({root:destination,source_schema:2,games:0,bios:null,warnings:[]}));
+        t.context.dualLibrary=null;
+        t.element('new-source').value='/backup/Extracted P9';
+        t.element('new-destination').value=destination;
+        t.element('new-contents').value='empty';
+        const opened=[];
+        t.context.loadLibrary=async root=>opened.push(root);
+        t.context.rememberLibrary=async root=>opened.push(root);
+        await vm.runInContext('createNewLibrary()',t.context);
+        assert.equal(t.calls.length,1);
+        assert.equal(t.calls[0].command,'create_library_from_dump');
+        assert.equal(t.calls[0].args.destination,destination);
+        assert.equal(t.calls[0].args.sourcePath,'/backup/Extracted P9');
+        assert.equal(t.calls[0].args.includeGames,false);
+        assert.deepEqual(opened,[destination,destination]);
+        assert.match(t.alerts[0],/Empty library ready for the console/);
+        assert.equal(t.element('new-error').textContent,'');
+    }
+    const html=fs.readFileSync(require('node:path').join(__dirname,'../src/index.html'),'utf8');
+    assert.doesNotMatch(html,/id="new-name"|id="new-parent"/);
+    assert.match(html,/Destination USB drive or folder/);
+    assert.match(html,/Creates game\/ and library\/ directly in the selected destination/);
+    assert.match(html,/Existing libraries are never replaced/);
+});
+
+test('The destination picker selects the drive itself and preserves each original-backup picker mode',async()=>{
+    const t=setup(async()=>assert.fail('Choosing paths must not create a library'));
+    const dialogs=[];
+    t.context.dialogOpen=async options=>{dialogs.push(structuredClone(options));return 'E:\\';};
+    vm.runInContext('setupImportUI()',t.context);
+    await t.element('btn-new-destination').listeners.click();
+    assert.equal(t.element('new-destination').value,'E:\\');
+    assert.deepEqual(dialogs[0],{directory:true,title:'Select destination USB drive or folder'});
+    for(const type of ['image','partitions','folder']) {
+        t.element('new-source-type').value=type;
+        await t.element('btn-new-source').listeners.click();
+        assert.equal(dialogs.at(-1).directory,type!=='image');
+        assert.equal(dialogs.at(-1).title,'Select original console backup');
+    }
+    assert.deepEqual(t.calls,[]);
+});
+
+test('Creation requires both chosen paths without requiring or inventing a folder name',async()=>{
+    for(const [source,destination] of [['','/Volumes/CHRONOS'],['/backup/nand.bin','']]) {
+        const t=setup(async()=>assert.fail('Incomplete choices must not start creation'));
+        t.element('new-source').value=source;t.element('new-destination').value=destination;
+        await vm.runInContext('createNewLibrary()',t.context);
+        assert.deepEqual(t.calls,[]);
+        assert.match(t.element('new-error').textContent,/Choose a backup and a destination USB drive or folder/);
+    }
+});
+
+test('Creation clears the old debounce and flushes existing edits before preparing the chosen drive',async()=>{
+    const t=setup(async command=>{
+        assert.equal(command,'create_library_from_dump');
+        return {root:'/Volumes/CHRONOS',source_schema:2,games:0,bios:null,warnings:[]};
+    });
+    t.element('new-source').value='/backup/nand.bin';t.element('new-destination').value='/Volumes/CHRONOS';
+    t.context.loadLibrary=async()=>{};t.context.rememberLibrary=async()=>{};
+    vm.runInContext("saveTimeout=setTimeout(()=>invoke('stale-save'),300)",t.context);
+    await vm.runInContext('createNewLibrary()',t.context);
+    assert.equal(t.context.saveTimeout,null);
+    await new Promise(resolve=>setTimeout(resolve,320));
+    assert.deepEqual(t.calls.map(call=>call.command),['saveNow','create_library_from_dump']);
+});
+
+test('An existing library save failure aborts creation and leaves its destination untouched',async()=>{
+    const t=setup(async()=>assert.fail('Failed saving must prevent destination writes'),async()=>{throw new Error('read-only current library');});
+    t.element('new-source').value='/backup/nand.bin';t.element('new-destination').value='/Volumes/CHRONOS';
+    await vm.runInContext('createNewLibrary()',t.context);
+    assert.deepEqual(t.calls.map(call=>call.command),['saveNow']);
+    assert.match(t.element('new-error').textContent,/read-only current library/);
+    assert.equal(t.context.dualLibrary.path,'/key/library');
+    assert.equal(t.element('btn-new-create').disabled,false);
 });
 
 test('Cleanup runs after the new choice is saved and stays inside the selected game folder',async()=>{

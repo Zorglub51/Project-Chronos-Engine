@@ -335,13 +335,16 @@ pub fn cleanup(root: &Path) -> Result<(), Error> {
     let mut keep = Vec::new();
     for name in queue {
         let name = console_name(&name)?;
+        let file = pool.join(&name);
+        if crate::source_library::is_bootstrap_rom(&file) {
+            continue;
+        }
         if games.iter().any(|g| references(g, &name))
             || published_references(&root.join("published/folders"), &name)?
         {
             keep.push(name);
             continue;
         }
-        let file = pool.join(&name);
         if file.exists() {
             regular(&file)?;
             fs::remove_file(file)?;

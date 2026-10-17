@@ -3,9 +3,11 @@ import contextlib
 import hashlib
 import importlib.util
 import io
+import json
 import os
 from pathlib import Path
 import socket
+import shutil
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -86,6 +88,101 @@ class PrepareTests(unittest.TestCase):
         self.assertTrue((self.destination / "game/041/config/title_prof.psb.m").is_file())
         self.assertTrue((self.destination / "published/folders/jp/_root/title_us_titleselect_jp.psb.m").is_file())
         self.assertFalse((self.destination / "game/040").exists())
+
+    def test_per_game_library_metadata_is_private_and_user_saves_are_not_imported(self):
+        source = self.base / "jp" / "Custom game directory"
+        self.put(self.published / ".per-game-saves-v2", b"2\n")
+        self.put(self.base / "jp/gamelist.json", b'[{"folder":"Custom game directory"}]')
+        self.put(source / "game.json", b'{"game_id":"0123456789abcdef0123456789abcdef"}')
+        self.put(source / "sram.bin", b"real SRAM must stay untouched")
+        self.put(source / "saves/state_3.bin", b"real fourth slot")
+        self.put(source / "save/save1.json", b"legacy real save")
+        self.prepare()
+        private = self.destination / "library/jp/Custom game directory"
+        self.assertEqual((source / "game.json").read_bytes(), (private / "game.json").read_bytes())
+        self.assertFalse((private / "sram.bin").exists())
+        self.assertFalse((private / "saves").exists())
+        self.assertFalse((private / "save").exists())
+        (private / "game.json").write_bytes(b"private edit")
+        self.assertEqual(b'{"game_id":"0123456789abcdef0123456789abcdef"}', (source / "game.json").read_bytes())
+        self.assertEqual(b"real fourth slot", (source / "saves/state_3.bin").read_bytes())
+
+    def setup_filesystem_catalogue(self):
+        shutil.rmtree(self.published / "folders")
+        self.put(self.base / ".chronos-library-v2", b"2\n")
+        self.put(self.base / "settings_games.json", b'{"genres":["Action"],"alpha_exclusions":["The "]}')
+        self.put(self.base / "jp/gamelist.json", b'[{"folder":"GAME000"}]')
+        self.put(self.base / "us/gamelist.json", b'[]')
+        game = self.base / "jp/GAME000"
+        self.put(game / "game.json", b'{"game_id":"0123456789abcdef0123456789abcdef","genre":1}')
+        self.put(game / "cover.png", b"editable PNG")
+        self.put(game / "runtime/assets.json", b'{"schema":1}')
+        self.put(game / "runtime/cover.image.psb.m", b"individual image")
+        self.put(game / "runtime/thumb.image.psb.m", b"individual thumb")
+        self.put(game / "sram.bin", b"real SRAM")
+        self.put(game / "saves/state_0.bin", b"real state")
+        self.put(game / "saves/state_0_meta.bin", b"real metadata")
+        self.put(game / "saves/locks.bin", b"real locks")
+        self.put(game / "old.pce.m", b"local ROM must not be copied")
+        self.put(self.base / "runtime/back/runtime/assets.json", b'{"schema":1}')
+        self.put(self.base / "runtime/back/runtime/back.image.psb.m", b"shared BACK")
+        self.put(self.published / "save/data_008_0000.bin", b"real aggregate settings and SRAM")
+        self.put(self.data / "system/motion/chronos_titleselect_jp.psb.m", b"fixed motion")
+        self.put(self.data / "system/font/makoto_basefont_32pt.psb.m", b"current prepared font")
+        self.put(self.published / "system/font/makoto_basefont_32pt.psb.m", b"stale publication font")
+        return game
+
+    def test_filesystem_catalogue_prepares_without_any_published_pack(self):
+        game = self.setup_filesystem_catalogue()
+        before = self.snapshot_sources()
+        self.prepare()
+        self.assertEqual(before, self.snapshot_sources())
+        library = self.destination / "library"
+        private = library / "jp/GAME000"
+        for name in ("game.json", "cover.png", "runtime/assets.json", "runtime/cover.image.psb.m",
+                     "runtime/thumb.image.psb.m"):
+            self.assertEqual((game / name).read_bytes(), (private / name).read_bytes())
+        for name in ("sram.bin", "saves", "old.pce.m"):
+            self.assertFalse((private / name).exists())
+        self.assertEqual(b"shared BACK", (library / "runtime/back/runtime/back.image.psb.m").read_bytes())
+        self.assertEqual((self.base / "settings_games.json").read_bytes(), (library / "settings_games.json").read_bytes())
+        self.assertEqual(b"2\n", (library / ".chronos-library-v2").read_bytes())
+        self.assertFalse((self.destination / "published/folders").exists())
+        for name in ("published/save", "published/roms", "nand"):
+            self.assertEqual([], list((self.destination / name).iterdir()))
+        self.assertEqual(b"current prepared font", (self.destination / "game/system/font/makoto_basefont_32pt.psb.m").read_bytes())
+        self.assertEqual(b"fixed motion", (self.destination / "game/system/motion/chronos_titleselect_jp.psb.m").read_bytes())
+        self.assertEqual(library / ".current-v2", native.current_folder_file(self.destination))
+
+    def test_filesystem_sandbox_uses_readonly_regular_rom_mounts_and_separate_nand(self):
+        self.setup_filesystem_catalogue()
+        self.prepare()
+        command = native.sandbox_command(self.destination, self.base / "build", 0, True)
+        mounts = [(command[i], command[i+1], command[i+2]) for i in range(len(command)-2)
+                  if command[i] in ("--bind", "--ro-bind")]
+        source = str((self.published / "roms").resolve())
+        self.assertIn(("--ro-bind", source, "/mnt/usb/library/published/roms"), mounts)
+        self.assertIn(("--ro-bind", source, "/usr/game/system/roms"), mounts)
+        self.assertIn(("--bind", str(self.destination / "published/save"), "/usr/game/save"), mounts)
+        self.assertIn(("--bind", str(self.destination / "nand"), "/rootfs_data"), mounts)
+        self.assertNotIn(("--bind", str(self.destination / "game/save"), "/rootfs_data"), mounts)
+        info = json.loads((self.destination / native.MARKER).read_text())
+        self.assertTrue(info["filesystem_catalogue"])
+
+    def test_invalid_filesystem_marker_or_linked_rom_pool_fails_before_copy(self):
+        self.setup_filesystem_catalogue()
+        marker = self.base / ".chronos-library-v2"
+        marker.write_bytes(b"3\n")
+        with self.assertRaisesRegex(RuntimeError, "Invalid V2"):
+            self.prepare()
+        self.assertFalse(self.destination.exists())
+        marker.write_bytes(b"2\n")
+        source = self.published / "roms/custom.pce"
+        source.unlink()
+        source.symlink_to(self.data / "system/roms/stock.pce.m")
+        with self.assertRaisesRegex(RuntimeError, "regular files"):
+            self.prepare()
+        self.assertFalse(self.destination.exists())
 
     def test_mixed_console_resources_are_rejected(self):
         (self.support / "version").write_bytes(b"1006WW")

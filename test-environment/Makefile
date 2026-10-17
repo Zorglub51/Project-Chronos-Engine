@@ -16,7 +16,7 @@ $(BUILD)/gl_proxy: graphics/gl_proxy.c graphics/gl_protocol.h graphics/frame_pac
 $(BUILD)/libMali.so: graphics/libMali_x11.c graphics/gl_protocol.h | $(BUILD)
 	$(ARMCC) $(CFLAGS) -shared -fPIC -o "$@" $< -ldl -lpthread -lrt
 
-$(BUILD)/m2hook_print.so: ../console-mod/hook-src/m2hook_print.c ../console-mod/hook-src/save_digest.h ../console-mod/hook-src/md5.h ../console-mod/hook-src/save_slice.h ../console-mod/hook-src/folder_worker.h ../console-mod/hook-src/console_layout.h | $(BUILD)
+$(BUILD)/m2hook_print.so: ../console-mod/hook-src/m2hook_print.c $(wildcard ../console-mod/hook-src/*.h) | $(BUILD)
 	$(ARMCC) $(CFLAGS) -shared -fPIC -mcpu=cortex-a7 -mfpu=neon-vfpv4 -mfloat-abi=hard -o "$@" $< -ldl -lrt -pthread
 
 $(BUILD)/test_fd_reuse: test_fd_reuse.c | $(BUILD)

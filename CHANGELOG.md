@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.0.0-alpha.3 (2026-10-25)
+
+- Serialize game/folder deletion with pending saves and update the directory
+  and game list through one operation. Reject stale saves that would recreate
+  a deleted entry, and keep the editor view aligned with committed changes.
+- Persist deletion intent before updating the catalogue, so interrupted cleanup
+  or Windows file locks cannot let an old editor window restore a deleted game
+  or folder. Report incomplete cleanup without undoing the committed deletion.
+- Remove a deleted game's shared ROM only after its final reference is gone.
+  Retain ROMs used elsewhere and unrelated files; archived legacy packs no
+  longer keep explicitly deleted V2 ROMs alive.
+
+Windows-only update: Windows x64 portable ZIP and NSIS installer. Existing
+orphaned directories are not automatically removed; game directory names remain
+stable after deletion. Other platforms remain available in 2.0.0-alpha.1.
+
 ## 2.0.0-alpha.2 (2026-10-25)
 
 - Bind the editor's Japanese title field and game heading to the native Japanese

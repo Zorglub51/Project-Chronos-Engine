@@ -289,7 +289,8 @@ pub fn queue_cleanup(root: &Path, name: &str) -> Result<(), Error> {
     Ok(())
 }
 
-// Old published packs must also stop referring to a ROM before it can go away.
+// Legacy runtimes still consume published packs; source libraries use only the
+// live metadata and retain these packs as recovery archives.
 fn published_references(path: &Path, name: &str) -> Result<bool, Error> {
     if !path.exists() {
         return Ok(false);
@@ -320,7 +321,7 @@ fn published_references(path: &Path, name: &str) -> Result<bool, Error> {
     Ok(false)
 }
 
-/// Only explicitly replaced files are eligible; do not sweep user ROMs or BIOS.
+/// Only explicitly replaced/deleted files are eligible; never sweep ROMs or BIOS.
 pub fn cleanup(root: &Path) -> Result<(), Error> {
     let path = root.join(".rom-cleanup.json");
     if !path.exists() {
@@ -340,7 +341,8 @@ pub fn cleanup(root: &Path) -> Result<(), Error> {
             continue;
         }
         if games.iter().any(|g| references(g, &name))
-            || published_references(&root.join("published/folders"), &name)?
+            || (!crate::source_library::enabled(root)
+                && published_references(&root.join("published/folders"), &name)?)
         {
             keep.push(name);
             continue;
@@ -467,6 +469,31 @@ mod tests {
         cleanup(root).unwrap();
         assert!(!pool.join("old.pcd").exists());
         assert!(pool.join("unmanaged.pcd").exists());
+    }
+    #[test]
+    fn source_cleanup_ignores_archived_profiles_but_keeps_live_and_unmanaged_files() {
+        let t = library();
+        let root = t.path();
+        fs::write(root.join(crate::source_library::MARKER), b"2\n").unwrap();
+        let pool = checked_pool(root).unwrap();
+        for name in ["deleted.pcd", "shared.pcd", "unmanaged.pcd", "bios.pce.m"] {
+            fs::write(pool.join(name), name).unwrap();
+        }
+        game(root, "us/FOLDER00/B", "shared.pcd", None);
+        let packs = root.join("published/folders/jp/_root");
+        fs::create_dir_all(&packs).unwrap();
+        fs::write(packs.join("title_prof.psb.m"),
+            m2_mzs::pack_default(b"roms/deleted.pcd", "title_prof.psb.m").unwrap()).unwrap();
+        queue_cleanup(root, "deleted.pcd").unwrap();
+        queue_cleanup(root, "shared.pcd").unwrap();
+        cleanup(root).unwrap();
+        assert!(!pool.join("deleted.pcd").exists());
+        assert!(pool.join("shared.pcd").is_file());
+        assert!(pool.join("unmanaged.pcd").is_file());
+        assert!(pool.join("bios.pce.m").is_file());
+        assert!(packs.join("title_prof.psb.m").is_file());
+        assert_eq!(serde_json::from_slice::<Vec<String>>(
+            &fs::read(root.join(".rom-cleanup.json")).unwrap()).unwrap(), vec!["shared.pcd"]);
     }
     #[test]
     fn unsafe_reference_and_missing_source_never_delete_other_roms() {

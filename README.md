@@ -12,7 +12,7 @@ includes the V2 USB runtime and requires a compatible Chronos console bootstrap.
 See [the implementation and validation status](docs/V2-runtime-library.md).
 
 Windows users can download the
-[2.0.0-alpha.2 title-editing update](https://github.com/Zorglub51/Project-Chronos-Engine/releases/tag/v2.0.0-alpha.2).
+[2.0.0-alpha.3 deletion and title-editing fixes](https://github.com/Zorglub51/Project-Chronos-Engine/releases/tag/v2.0.0-alpha.3).
 The macOS, Linux AppImage and Arch Linux downloads remain in the 2.0.0-alpha.1 release.
 
 ## What's in this repo
@@ -53,6 +53,11 @@ Game details include an **Expert** section for per-game emulation options,
 screen framing and audio gain. The **i** buttons explain effects and possible
 values in English. See the [per-game parameter reference](docs/game-parameters.md)
 for the original engine behavior and the settings managed by Chronos.
+
+Use **Delete this game** to remove a game and its directory, including its save
+data. The shared ROM is removed only when no other game uses it. Remaining
+`GAME` directory names stay stable, so gaps in their numbering are expected.
+`library/published/roms` is the live shared ROM store in V2 and must be kept.
 
 ### Create a library from a backup
 

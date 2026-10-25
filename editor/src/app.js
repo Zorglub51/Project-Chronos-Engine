@@ -2472,62 +2472,65 @@ async function moveGame() {
 
 // ---- Delete game ----
 async function deleteGame() {
+    if (operationBusy) return;
     const library = getLibrary();
-    if (selectedIndex < 0) return;
+    if (!library || selectedIndex < 0) return;
     const entry = library.games[selectedIndex];
+    if (!entry) return;
     const isFolder = entry.is_folder;
-    const what = isFolder ? 'folder' : 'game';
-    const warning = isFolder
+    const confirmation = isFolder
         ? `Delete folder "${entry.game.display.name_eng}" and ALL games inside?\n\nThis cannot be undone.`
-        : `Delete "${entry.game.display.name_eng || entry.game.display.name}" and its folder?\n\nThis cannot be undone.`;
-    if (editorSettings.confirm_delete && !await modalConfirm(warning)) return;
-
-    const lineupForDelete = currentFolder
-        ? currentLineup + '/' + currentFolder.name
-        : currentLineup;
+        : `Delete "${entry.game.display.name_eng || entry.game.display.tname || entry.game.display.name}" and its folder?\n\nThis cannot be undone.`;
+    if (editorSettings.confirm_delete && !await modalConfirm(confirmation)) return;
+    if (operationBusy || getLibrary() !== library || library.games[selectedIndex] !== entry) return;
 
     try {
-        const cmd = isFolder ? 'delete_folder' : 'delete_game';
-        await invoke(cmd, {
-            gamesPath: dualLibrary.path,
-            lineup: lineupForDelete,
-            folderName: entry.folder
-        });
-        const deletedIndex = selectedIndex;
-        library.games.splice(deletedIndex, 1);
+        let warning;
+        await runOperation(isFolder ? 'Deleting folder…' : 'Deleting game…', async () => {
+            // Drain every earlier snapshot before removing files. A late save
+            // otherwise recreates the deleted directory and its catalogue row.
+            if (saveTimeout) clearTimeout(saveTimeout);
+            saveTimeout = null;
+            await saveNow();
 
-        // Recompute all sort indices (gaps cause phantom entries in emu)
-        recomputeSortIndices(library.games);
-        // Save gamelist.json immediately so it stays in sync with disk
-        if (currentFolder) {
-            await invoke('save_folder_contents', {
+            const deletedIndex = selectedIndex;
+            const remaining = structuredClone(library.games);
+            remaining.splice(deletedIndex, 1);
+            recomputeSortIndices(remaining);
+            const result = await invoke(isFolder ? 'delete_folder' : 'delete_game', {
                 gamesPath: dualLibrary.path,
-                lineup: currentLineup,
-                folderName: currentFolder.name,
-                library: library
+                lineup: currentFolder ? currentLineup + '/' + currentFolder.name : currentLineup,
+                folderName: entry.folder,
+                remainingSort: remaining.map(game => game.sort),
             });
-        } else {
-            await invoke('save_library', { gamesPath: dualLibrary.path, library: dualLibrary });
-        }
-        selectedIndex = -1;
-        renderGameList();
-        updateStats();
-        // Auto-select next game, or previous if last was deleted
-        if (library.games.length > 0) {
-            const nextIndex = deletedIndex < library.games.length ? deletedIndex : library.games.length - 1;
-            const nextEntry = library.games[nextIndex];
-            if (nextEntry.is_folder) {
-                selectFolder(nextIndex);
-            } else {
-                selectGame(nextIndex);
+
+            // Apply only the committed backend result, including parent counts.
+            dualLibrary = result.library;
+            if (currentFolder) {
+                currentFolder.parentGames = dualLibrary[currentLineup].games;
+                dualLibrary[currentLineup].games = result.source.games;
             }
-        } else {
-            document.getElementById('editor').classList.remove('active');
-            document.getElementById('folder-editor').style.display = 'none';
-            document.getElementById('placeholder').style.display = '';
-        }
+            coverCache = {};
+            warning = result.warning;
+            setSaveStatus('Changes saved');
+            selectedIndex = -1;
+            renderGameList();
+            updateStats();
+            const source = getLibrary();
+            if (source.games.length > 0) {
+                const nextIndex = Math.min(deletedIndex, source.games.length - 1);
+                if (source.games[nextIndex].is_folder) selectFolder(nextIndex);
+                else selectGame(nextIndex);
+            } else {
+                document.getElementById('editor').classList.remove('active');
+                document.getElementById('folder-editor').style.display = 'none';
+                document.getElementById('placeholder').style.display = '';
+            }
+        });
+        if (warning) await modalAlert((isFolder ? 'Folder' : 'Game') + ' deleted, but ' + warning);
     } catch (e) {
-        modalAlert('Error deleting game: ' + e);
+        setSaveStatus('Delete failed: ' + e, true);
+        await modalAlert('Error deleting ' + (isFolder ? 'folder' : 'game') + ': ' + e);
     }
 }
 

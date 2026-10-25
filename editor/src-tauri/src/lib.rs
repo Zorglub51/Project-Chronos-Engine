@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use tauri::Manager;
 mod font_commands;
 mod import_commands;
+mod library_delete;
 mod library_move;
 mod partition_commands;
 
@@ -292,10 +293,35 @@ fn load_lineup(lineup_path: &Path) -> Library {
 // --- Helper: save a single lineup to a subdirectory ---
 
 fn save_lineup(lineup_path: &Path, library: &Library) -> Result<(), String> {
-    // Create lineup dir if needed
-    if !lineup_path.exists() {
-        fs::create_dir_all(lineup_path)
-            .map_err(|e| format!("Failed to create {}: {}", lineup_path.display(), e))?;
+    // Share the move/delete mutex for the complete catalogue transaction.
+    // Releasing it between games would let an old snapshot restore the index
+    // after a deletion even if no missing game directory were recreated.
+    let _cover_update = import_commands::lock_cover_update()?;
+    library_delete::ensure_not_deleted(lineup_path)?;
+    // Creation commands and importers create their entries before saving a
+    // catalogue. An old queued snapshot must never resurrect a deleted/moved
+    // directory. Check every entry before writing even the first game.
+    for entry in &library.games {
+        let game_dir = lineup_path.join(&entry.folder);
+        library_delete::ensure_not_deleted(&game_dir)?;
+        match fs::symlink_metadata(&game_dir) {
+            Ok(metadata) if metadata.file_type().is_dir() => {}
+            _ => return Err(format!(
+                "Library entry '{}' is missing or is not a regular directory. Reopen the library before saving; no game files were recreated.",
+                game_dir.display()
+            )),
+        }
+    }
+    // Only a new root lineup can be created here. A stale empty folder snapshot
+    // has no game entries to preflight and must not recreate its old directory.
+    match fs::symlink_metadata(lineup_path) {
+        Ok(metadata) if metadata.file_type().is_dir() => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+            && matches!(lineup_path.file_name().and_then(|s| s.to_str()), Some("jp" | "us")) => {
+                fs::create_dir_all(lineup_path)
+                    .map_err(|e| format!("Failed to create {}: {}", lineup_path.display(), e))?;
+            }
+        _ => return Err(format!("Library folder {} is missing or is not a regular directory. Reopen the library before saving; no folder was recreated.", lineup_path.display())),
     }
 
     // Build gamelist.json from library order
@@ -306,10 +332,6 @@ fn save_lineup(lineup_path: &Path, library: &Library) -> Result<(), String> {
 
     for entry in &library.games {
         let game_dir = lineup_path.join(&entry.folder);
-        if !game_dir.exists() {
-            fs::create_dir_all(&game_dir)
-                .map_err(|e| format!("Failed to create {}: {}", entry.folder, e))?;
-        }
 
         if entry.is_folder {
             // Save folder display name as folder.json
@@ -321,7 +343,7 @@ fn save_lineup(lineup_path: &Path, library: &Library) -> Result<(), String> {
             fs::write(game_dir.join("folder.json"), meta_json)
                 .map_err(|e| format!("Failed to write {}/folder.json: {}", entry.folder, e))?;
         } else {
-            save_game_json(&game_dir.join("game.json"), &entry.game)?;
+            save_game_json_locked(&game_dir.join("game.json"), &entry.game)?;
         }
     }
 
@@ -334,6 +356,16 @@ fn save_game_json(path: &Path, game: &GameJson) -> Result<(), String> {
     // The same lock covers manual PNG imports and console image preparation.
     // Do not let an importer prepare against half of a geometry update.
     let _cover_update = import_commands::lock_cover_update()?;
+    save_game_json_locked(path, game)
+}
+
+/// The caller holds the shared cover/catalogue mutation mutex.
+fn save_game_json_locked(path: &Path, game: &GameJson) -> Result<(), String> {
+    let entry = path.parent().ok_or_else(|| "Game metadata directory is missing".to_string())?;
+    library_delete::ensure_not_deleted(entry)?;
+    if !fs::symlink_metadata(entry).is_ok_and(|meta| meta.file_type().is_dir()) {
+        return Err(format!("Game directory {} is missing or is not a regular directory. Reopen the library before saving; no game files were recreated.", entry.display()));
+    }
     let previous: Option<serde_json::Value> = if path.exists() {
         Some(serde_json::from_slice(&fs::read(path).map_err(|e| {
             format!("Read {} before saving: {e}", path.display())
@@ -369,7 +401,6 @@ fn save_game_json(path: &Path, game: &GameJson) -> Result<(), String> {
             "ccolor":value["display"]["ccolor"].as_u64().unwrap_or(0),
         })
     };
-    let entry = path.parent().ok_or_else(|| "Game metadata directory is missing".to_string())?;
     let source_mode = m2_publish::rom_store::library_root(entry)
         .is_some_and(|root| m2_publish::source_library::enabled(&root));
     let changed = previous.as_ref().map(cover_inputs) != Some(cover_inputs(&data));
@@ -674,13 +705,19 @@ fn create_game(
 }
 
 #[tauri::command]
-fn delete_game(games_path: String, lineup: String, folder_name: String) -> Result<(), String> {
-    let game_dir = Path::new(&games_path).join(&lineup).join(&folder_name);
-    if !game_dir.exists() {
-        return Err("Folder does not exist".to_string());
-    }
-    fs::remove_dir_all(&game_dir).map_err(|e| format!("Failed to delete folder: {}", e))?;
-    Ok(())
+async fn delete_game(
+    games_path: String,
+    lineup: String,
+    folder_name: String,
+    remaining_sort: Vec<GameListEntry>,
+) -> Result<library_delete::DeleteResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        library_delete::perform_delete(
+            Path::new(&games_path), &lineup, &folder_name, false, &remaining_sort,
+        )
+    })
+    .await
+    .map_err(|e| format!("Game deletion stopped: {e}"))?
 }
 
 #[tauri::command]
@@ -799,13 +836,19 @@ fn create_folder(games_path: String, lineup: String, folder_name: String) -> Res
 }
 
 #[tauri::command]
-fn delete_folder(games_path: String, lineup: String, folder_name: String) -> Result<(), String> {
-    let folder_path = Path::new(&games_path).join(&lineup).join(&folder_name);
-    if !folder_path.exists() {
-        return Err("Folder does not exist".to_string());
-    }
-    fs::remove_dir_all(&folder_path).map_err(|e| format!("Failed to delete folder: {}", e))?;
-    Ok(())
+async fn delete_folder(
+    games_path: String,
+    lineup: String,
+    folder_name: String,
+    remaining_sort: Vec<GameListEntry>,
+) -> Result<library_delete::DeleteResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        library_delete::perform_delete(
+            Path::new(&games_path), &lineup, &folder_name, true, &remaining_sort,
+        )
+    })
+    .await
+    .map_err(|e| format!("Folder deletion stopped: {e}"))?
 }
 
 // ---- Load a single game entry from disk ----

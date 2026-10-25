@@ -1175,7 +1175,7 @@ async function enterSelectedFolder() {
 
 // ---- Select game ----
 function gameEditorTitle(display) {
-    return [display.name_eng, display.name].filter(name => name && name.trim()).join(' / ');
+    return [display.name_eng, display.tname || display.name].filter(name => name && name.trim()).join(' / ');
 }
 
 function selectGame(index) {
@@ -1232,7 +1232,7 @@ function selectGame(index) {
     }
 
     // Populate form fields
-    setField('f-name', entry.game.display.name);
+    setField('f-name', entry.game.display.tname || entry.game.display.name);
     setField('f-name-eng', entry.game.display.name_eng);
     setField('f-players', entry.game.display.players);
     setField('f-titlebar', entry.game.display.titlebar);
@@ -1295,14 +1295,9 @@ function onFieldChange(el) {
     obj[key] = val;
     autoSave();
 
-    // Keep tname in sync with name (tname is the display name used by the emu)
-    if (path === 'display.name') {
-        entry.game.display.tname = val;
-    }
-
-    // Update header live
-    if (path === 'display.name_eng' || path === 'display.name') {
-        const name = entry.game.display.name_eng || entry.game.display.name;
+    // Display titles are independent of the stock internal name.
+    if (['display.name_eng', 'display.tname', 'display.name'].includes(path)) {
+        const name = entry.game.display.name_eng || entry.game.display.tname || entry.game.display.name;
         document.getElementById('editor-title').textContent = gameEditorTitle(entry.game.display);
         const listItems = document.querySelectorAll('.game-item');
         if (listItems[selectedIndex]) {
@@ -1323,7 +1318,7 @@ function onFieldChange(el) {
         if (expertEditor) expertEditor.render(entry.game);
         updateTags(entry);
     }
-    if (['display.name', 'display.name_eng', 'display.titlebar'].includes(path)) queueTitlePreview();
+    if (['display.tname', 'display.name', 'display.name_eng', 'display.titlebar'].includes(path)) queueTitlePreview();
 }
 
 // csize → rom.arch mapping

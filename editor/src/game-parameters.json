@@ -551,14 +551,14 @@
     {
       "path": "display.name",
       "key": "name",
-      "label": "Japanese name",
+      "label": "Internal name",
       "type": "string",
       "group": "Ordinary details",
-      "help": "Menu bookkeeping/name and Japanese display fallback; the normal editor keeps tname in sync.",
-      "ui": "existing",
+      "help": "Original internal menu label, preserved independently of the two displayed spine titles. Used as a fallback when a display title is missing.",
+      "ui": "managed",
       "optional": true,
       "source": "Stock menu/emulator readers; editor platform mapping",
-      "values": "Text; the ordinary editor also updates the Japanese display name."
+      "values": "Text; editing a displayed title does not change this label."
     },
     {
       "path": "display.tname",
@@ -566,7 +566,7 @@
       "label": "Japanese display name",
       "type": "string",
       "group": "Ordinary details",
-      "help": "Text actually drawn in the Japanese menu view.",
+      "help": "Spine title for the Japanese menu language: tname from items 0–49 for the JP lineup, or 50–99 for the US lineup.",
       "ui": "existing",
       "optional": true,
       "source": "Stock menu/emulator readers; editor platform mapping",
@@ -578,7 +578,7 @@
       "label": "English name",
       "type": "string",
       "group": "Ordinary details",
-      "help": "tname in the translated menu half; the two views share one game/profile.",
+      "help": "Spine title for every non-Japanese menu language: tname from items 100–149 for the JP lineup, or 150–199 for the US lineup. The two views share one game/profile.",
       "ui": "existing",
       "optional": true,
       "source": "Stock menu/emulator readers; editor platform mapping",

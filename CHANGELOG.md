@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Bind the editor's Japanese title field and game heading to the native Japanese
+  `tname`, preserving the separate internal `name`. Use each lineup's original
+  `tname` from items 0–99 for Japanese and 100–199 for other menu languages,
+  including differences in capitalization and spelling between the two views.
+
 ## 2.0.0-alpha.1 (2026-10-17)
 
 - Read the editor's JSON library directly in the native console runtime, with

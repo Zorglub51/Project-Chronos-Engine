@@ -22,7 +22,7 @@ function entry(index, role = "game") {
         role = role, game_id = role == "game" ? "id" + index.tostring() : "",
         native_region_tag = "GAME" + index.tostring(),
         save_path = "jp/GAME" + index.tostring(),
-        game = { display = { name = "JP" + index.tostring(), tname = "JP" + index.tostring(),
+        game = { display = { name = "INTERNAL" + index.tostring(), tname = "JP" + index.tostring(),
                    name_eng = "ENG" + index.tostring(), titlebar = 6, ccolor = 3, csize = 1 },
                  rom = { arch = "sgx", country = "jp", preamp = 0.64, rom = "old.pce", tg16_option = 3,
                    future_option = { enabled = true } },
@@ -52,6 +52,8 @@ foreach (count in [0, 1, 2, 3, 4, 5, 50]) {
             check(original.game_id == english.game_id && original.save_path == english.save_path,
                   "translated save identity");
             check(original.tname == "JP" + i.tostring() && english.tname == "ENG" + i.tostring(), "names");
+            check(original.name == "INTERNAL" + i.tostring() && english.name == original.name,
+                  "internal name is preserved separately from both spine titles");
             check(original.chronos_entry == english.chronos_entry, "single metadata owner");
             check(original.titlebar == 6 && original.ccolor == 3, "US titlebar/packaging retained");
             local rom = catalogue.profile.m2epi.version[original.regionTag];
@@ -70,6 +72,35 @@ foreach (count in [0, 1, 2, 3, 4, 5, 50]) {
             check(catalogue.profile.game_versions_default.japan == "CHRONOS_EMPTY", "empty bootstrap");
             check(catalogue.profile.m2epi.version.CHRONOS_EMPTY.chronos_game_id == "", "empty has no owner");
         }
+    }
+}
+// Stock-like examples deliberately keep the internal name, Japanese-menu
+// spine title and other-language spine title distinct. Both lineups must use
+// the same four-block contract, including original capitalization.
+foreach (lineup in ["jp", "us"]) {
+    local offset = lineup == "jp" ? 0 : 50;
+    local titles = [
+        ["天外魔境2", "天外魔境II 卍MARU", "Tengai Makyō II Manjimaru"],
+        ["R-TYPE", "R-TYPE", "R-Type"],
+        ["Power Golf", "POWER GOLF", "Power Golf"]
+    ];
+    incoming = { schema = 2, lineup = lineup, folder = "_root", path = "test",
+        entries = [], settings = {}, entry_count = titles.len(), playable_count = titles.len() };
+    foreach (index, titleset in titles) {
+        local row = entry(index);
+        row.game.display.name = titleset[0];
+        row.game.display.tname = titleset[1];
+        row.game.display.name_eng = titleset[2];
+        incoming.entries.append(row);
+    }
+    catalogue.read(lineup, "_root");
+    foreach (index, titleset in titles) {
+        local japanese = catalogue.top.items[offset + index];
+        local translated = catalogue.top.items[offset + 100 + index];
+        check(japanese.name == titleset[0] && translated.name == titleset[0], "stock internal title");
+        check(japanese.tname == titleset[1], "Japanese-menu spine uses the base-block tname");
+        check(translated.tname == titleset[2], "other-language spine uses the block +100 tname");
+        check(japanese.regionTag == translated.regionTag, "language change retains the game identity");
     }
 }
 incoming = { schema = 2, lineup = "jp", folder = "FOLDER_TEST", path = "test",
@@ -128,7 +159,7 @@ def main():
         script.write_bytes((ROOT / "scripts-src/chronos_saves.nut").read_bytes() + b"\n" +
                            (ROOT / "scripts-src/chronos_library.nut").read_bytes() + b"\n" + CHECK.encode())
         subprocess.run([str(args.checker.resolve()), "-r", str(script)], check=True)
-    print("PASS: source views 0–50, JP/US, BACK, options, sorting, rollback and save aliases")
+    print("PASS: source views 0–50, four JP/US language blocks, distinct internal/spine titles, BACK, options, sorting, rollback and save aliases")
 
 
 if __name__ == "__main__":

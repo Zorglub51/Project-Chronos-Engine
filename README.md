@@ -11,6 +11,10 @@ long-session validation are ongoing. The
 includes the V2 USB runtime and requires a compatible Chronos console bootstrap.
 See [the implementation and validation status](docs/V2-runtime-library.md).
 
+Windows users can download the
+[2.0.0-alpha.2 title-editing update](https://github.com/Zorglub51/Project-Chronos-Engine/releases/tag/v2.0.0-alpha.2).
+The macOS, Linux AppImage and Arch Linux downloads remain in the 2.0.0-alpha.1 release.
+
 ## What's in this repo
 
 | Directory | Role |

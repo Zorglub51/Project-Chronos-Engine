@@ -1,11 +1,14 @@
 # Changelog
 
-## Unreleased
+## 2.0.0-alpha.2 (2026-10-25)
 
 - Bind the editor's Japanese title field and game heading to the native Japanese
   `tname`, preserving the separate internal `name`. Use each lineup's original
   `tname` from items 0–99 for Japanese and 100–199 for other menu languages,
   including differences in capitalization and spelling between the two views.
+
+Windows-only update: Windows x64 portable ZIP and NSIS installer. The macOS,
+Linux AppImage and Arch Linux packages remain available in 2.0.0-alpha.1.
 
 ## 2.0.0-alpha.1 (2026-10-17)
 
